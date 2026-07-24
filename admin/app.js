@@ -173,6 +173,7 @@ let appsList = [];
 let appMetadataList = [];
 let earningsData = [];
 let currentUsdToVndRate = 25000;
+let currentUsdCurrencyRates = { USD: 1, VND: currentUsdToVndRate };
 // KPI summary computed by the `dashboard-summary` edge function — the single
 // source of truth shared with the Telegram bot. When present (and no filter is
 // applied) the headline KPI cards render these values verbatim so the web and
@@ -269,6 +270,7 @@ async function loadGooglePlayAccounts() {
 
 // Fetch exchange rate dynamically
 async function fetchExchangeRate() {
+  let vietcombankRate = null;
   try {
     const res = await fetch("https://portal.vietcombank.com.vn/Usercontrols/TVPortal.TyGia/pXML.aspx");
     const text = await res.text();
@@ -277,8 +279,11 @@ async function fetchExchangeRate() {
     const exrates = xmlDoc.getElementsByTagName("Exrate");
     for (let i = 0; i < exrates.length; i++) {
       if (exrates[i].getAttribute("CurrencyCode") === "USD") {
-        currentUsdToVndRate = parseFloat(exrates[i].getAttribute("Transfer") || exrates[i].getAttribute("Sell"));
-        return;
+        const parsedRate = parseFloat(
+          (exrates[i].getAttribute("Transfer") || exrates[i].getAttribute("Sell") || "").replace(/,/g, "")
+        );
+        if (Number.isFinite(parsedRate) && parsedRate > 1000) vietcombankRate = parsedRate;
+        break;
       }
     }
   } catch (err) {
@@ -288,11 +293,24 @@ async function fetchExchangeRate() {
   try {
     const res = await fetch("https://open.er-api.com/v6/latest/USD");
     const data = await res.json();
-    if (data && data.rates && data.rates.VND) {
-      currentUsdToVndRate = data.rates.VND;
+    if (res.ok && data && data.result === "success" && data.rates) {
+      currentUsdCurrencyRates = Object.fromEntries(
+        Object.entries(data.rates)
+          .map(([currency, value]) => [String(currency).toUpperCase(), Number(value)])
+          .filter(([, value]) => Number.isFinite(value) && value > 0)
+      );
+      currentUsdCurrencyRates.USD = 1;
+      if (currentUsdCurrencyRates.VND) {
+        currentUsdToVndRate = currentUsdCurrencyRates.VND;
+      }
     }
   } catch (err) {
     console.log("Failed to fetch open exchange rate", err);
+  }
+
+  if (vietcombankRate) {
+    currentUsdToVndRate = vietcombankRate;
+    currentUsdCurrencyRates.VND = vietcombankRate;
   }
 }
 
@@ -1224,6 +1242,12 @@ async function fetchDashboardSummary(accountId = currentPlayAccountId()) {
 function applyDashboardSummary(summary) {
   serverSummary = summary;
   currentUsdToVndRate = summary.rate || currentUsdToVndRate;
+  currentUsdCurrencyRates = {
+    ...currentUsdCurrencyRates,
+    ...(summary.currencyRates || {}),
+    USD: 1,
+    VND: summary.rate || summary.currencyRates?.VND || currentUsdToVndRate,
+  };
   appsList = (summary.apps || []).map(a => ({ ...a, title: cleanAppTitle(a.id, a.title) }));
   appMetadataList = (summary.appMetadata || []).map(a => ({
     ...a,
@@ -1969,9 +1993,11 @@ function rtdnRowMatchesCurrentAccount(row) {
 }
 
 function rtdnAmountUsd(row) {
-  const amount = numberValue(row && row.amount);
-  const currency = String(row && row.currency || "USD").toUpperCase();
-  return currency === "VND" ? amount / currentUsdToVndRate : amount;
+  return amountToUSD(
+    row && row.amount,
+    row && row.currency,
+    currentUsdCurrencyRates,
+  );
 }
 
 async function isOrderInGoogleEstimate(orderId) {
@@ -3051,7 +3077,7 @@ function renderDashboard(options = {}) {
   //  - "Ước lượng tháng hiện tại": estimate rows plus realtime add-on rows
   //    that are not yet present in the Google Estimated sales report.
   const rate = currentUsdToVndRate;
-  const toUSD = e => (e.currency === "VND" ? parseFloat(e.amount) / rate : parseFloat(e.amount));
+  const toUSD = e => amountToUSD(e.amount, e.currency, currentUsdCurrencyRates);
   const isEstimate = e => e.source === "google_play_estimate";
 
   // For the full, unfiltered view, render the edge function's precomputed KPIs
@@ -3675,9 +3701,7 @@ function buildRecentMonthlyKpisFromEarnings(rows, rate) {
       officialRows: 0,
       estimateRows: 0,
     };
-    const amount = e.currency === "VND"
-      ? parseFloat(e.amount || 0) / rate
-      : parseFloat(e.amount || 0);
+    const amount = amountToUSD(e.amount, e.currency, currentUsdCurrencyRates);
     if (e.source === "google_play") {
       current.officialUSD += amount;
       current.officialRows += 1;
@@ -3878,10 +3902,7 @@ function updateRangeControlVisibility() {
 }
 
 function purchaseAmountUSD(row) {
-  const amount = Number(row.amount || 0);
-  const currency = String(row.currency || "USD").toUpperCase();
-  if (currency === "VND") return amount / currentUsdToVndRate;
-  return amount;
+  return amountToUSD(row.amount, row.currency, currentUsdCurrencyRates);
 }
 
 function currentMonthKeyVN() {
@@ -4054,10 +4075,25 @@ function renderTopPlayersList(topPlayers, emptyText) {
   `).join("");
 }
 
-function amountToUSD(amount, currency, rate) {
+function amountToUSD(amount, currency, rates = currentUsdCurrencyRates) {
   const numericAmount = parseFloat(amount);
   const safeAmount = Number.isFinite(numericAmount) ? numericAmount : 0;
-  return String(currency || "USD").toUpperCase() === "VND" ? safeAmount / rate : safeAmount;
+  const currencyCode = String(currency || "USD").trim().toUpperCase();
+  if (currencyCode === "USD") return safeAmount;
+
+  const currencyRates = typeof rates === "number"
+    ? { ...currentUsdCurrencyRates, VND: rates }
+    : (rates || currentUsdCurrencyRates);
+  const unitsPerUsd = Number(currencyRates[currencyCode]);
+  if (Number.isFinite(unitsPerUsd) && unitsPerUsd > 0) {
+    return safeAmount / unitsPerUsd;
+  }
+
+  console.warn(`Không có tỷ giá USD cho ${currencyCode}; bỏ qua khỏi phép tính.`, {
+    amount: safeAmount,
+    currency: currencyCode,
+  });
+  return 0;
 }
 
 function chunks(values, size) {
@@ -4516,7 +4552,7 @@ function renderTopApps(filtered, appMap, rate) {
       .filter(e => e.month === selectedMonth)
       .forEach(e => {
         const amt = parseFloat(e.amount);
-        const usd = e.currency === "USD" ? amt : amt / rate;
+        const usd = amountToUSD(amt, e.currency, currentUsdCurrencyRates);
         totals[e.app_id] = (totals[e.app_id] || 0) + usd;
       });
     const appIds = new Set([
@@ -4565,7 +4601,7 @@ function renderChart(filtered, uniqueMonths, rate) {
     filtered.forEach(e => {
       if (e.month === m) {
         const amt = parseFloat(e.amount);
-        sum += e.currency === "USD" ? amt : amt / rate;
+        sum += amountToUSD(amt, e.currency, currentUsdCurrencyRates);
       }
     });
     return Math.round(sum * 100) / 100;
@@ -4689,7 +4725,7 @@ function renderPivotTable(filtered, uniqueApps, uniqueMonths, appMap) {
 
         entries.forEach(e => {
           const amt = parseFloat(e.amount);
-          const usd = e.currency === "USD" ? amt : amt / currentUsdToVndRate;
+          const usd = amountToUSD(amt, e.currency, currentUsdCurrencyRates);
           cellUSD += usd;
           appTotalUSD += usd;
           monthTotalsUSD[m] = (monthTotalsUSD[m] || 0) + usd;
