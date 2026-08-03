@@ -32,6 +32,8 @@ const REALTIME_RTDN_PAGE_SIZE = 10;
 const KPI_COUNT_ANIMATION_MS = 720;
 const ADMIN_ALIVE_INTERVAL_MS = 30 * 1000;
 const ADMIN_ALIVE_STALE_MS = ADMIN_ALIVE_INTERVAL_MS * 3;
+const DASHBOARD_SUMMARY_CACHE_PREFIX = "galax_admin_dashboard_summary_v1";
+const DASHBOARD_SUMMARY_CACHE_MAX_AGE_MS = 30 * 60 * 1000;
 const SYNC_PROGRESS_PHASES = [
   { key: "sync-earnings", label: "Đồng bộ finalized earnings", defaultDurationMs: 3000 },
   { key: "sync-estimates", label: "Đồng bộ Estimated sales reports", defaultDurationMs: 25000 },
@@ -63,6 +65,7 @@ let trafficRefreshTimer = null;
 let trafficRefreshInFlight = false;
 let trafficRefreshQueued = false;
 let trafficRefreshPendingUntilVisible = false;
+let dashboardLoadRequestId = 0;
 const realtimeEstimateOrderCache = new Map();
 
 function isTrafficDetailPage() {
@@ -202,6 +205,46 @@ function googlePlayAccountPayload(accountId = currentPlayAccountId()) {
   return { playAccountId: accountId };
 }
 
+function dashboardSummaryCacheKey(accountId = currentPlayAccountId()) {
+  return `${DASHBOARD_SUMMARY_CACHE_PREFIX}:${currentSessionEmail()}:${accountId}`;
+}
+
+function readCachedDashboardSummary(accountId = currentPlayAccountId()) {
+  try {
+    const raw = localStorage.getItem(dashboardSummaryCacheKey(accountId));
+    if (!raw) return null;
+    const cached = JSON.parse(raw);
+    if (!cached || !cached.summary || Date.now() - Number(cached.cachedAt || 0) > DASHBOARD_SUMMARY_CACHE_MAX_AGE_MS) {
+      localStorage.removeItem(dashboardSummaryCacheKey(accountId));
+      return null;
+    }
+    if (String(cached.summary.playAccountId || DEFAULT_PLAY_ACCOUNT_ID) !== String(accountId)) return null;
+    return cached.summary;
+  } catch (_) {
+    return null;
+  }
+}
+
+function cacheDashboardSummary(summary, accountId = currentPlayAccountId()) {
+  try {
+    localStorage.setItem(dashboardSummaryCacheKey(accountId), JSON.stringify({
+      cachedAt: Date.now(),
+      summary,
+    }));
+  } catch (_) {
+    // A cache miss is harmless when storage is unavailable or full.
+  }
+}
+
+function clearDashboardSummaryCache() {
+  for (let i = localStorage.length - 1; i >= 0; i -= 1) {
+    const key = localStorage.key(i);
+    if (key && key.startsWith(`${DASHBOARD_SUMMARY_CACHE_PREFIX}:`)) {
+      localStorage.removeItem(key);
+    }
+  }
+}
+
 function adminTrafficSessionId() {
   let sessionId = sessionStorage.getItem(ADMIN_TRAFFIC_SESSION_STORAGE_KEY);
   if (sessionId) return sessionId;
@@ -266,52 +309,6 @@ async function loadGooglePlayAccounts() {
     googlePlayAccounts = [{ id: DEFAULT_PLAY_ACCOUNT_ID, label: DEFAULT_PLAY_ACCOUNT_LABEL, isDefault: true }];
   }
   updatePlayAccountSelect();
-}
-
-// Fetch exchange rate dynamically
-async function fetchExchangeRate() {
-  let vietcombankRate = null;
-  try {
-    const res = await fetch("https://portal.vietcombank.com.vn/Usercontrols/TVPortal.TyGia/pXML.aspx");
-    const text = await res.text();
-    const parser = new DOMParser();
-    const xmlDoc = parser.parseFromString(text, "text/xml");
-    const exrates = xmlDoc.getElementsByTagName("Exrate");
-    for (let i = 0; i < exrates.length; i++) {
-      if (exrates[i].getAttribute("CurrencyCode") === "USD") {
-        const parsedRate = parseFloat(
-          (exrates[i].getAttribute("Transfer") || exrates[i].getAttribute("Sell") || "").replace(/,/g, "")
-        );
-        if (Number.isFinite(parsedRate) && parsedRate > 1000) vietcombankRate = parsedRate;
-        break;
-      }
-    }
-  } catch (err) {
-    console.log("Failed to fetch VCB exchange rate, using fallback", err);
-  }
-  
-  try {
-    const res = await fetch("https://open.er-api.com/v6/latest/USD");
-    const data = await res.json();
-    if (res.ok && data && data.result === "success" && data.rates) {
-      currentUsdCurrencyRates = Object.fromEntries(
-        Object.entries(data.rates)
-          .map(([currency, value]) => [String(currency).toUpperCase(), Number(value)])
-          .filter(([, value]) => Number.isFinite(value) && value > 0)
-      );
-      currentUsdCurrencyRates.USD = 1;
-      if (currentUsdCurrencyRates.VND) {
-        currentUsdToVndRate = currentUsdCurrencyRates.VND;
-      }
-    }
-  } catch (err) {
-    console.log("Failed to fetch open exchange rate", err);
-  }
-
-  if (vietcombankRate) {
-    currentUsdToVndRate = vietcombankRate;
-    currentUsdCurrencyRates.VND = vietcombankRate;
-  }
 }
 
 // DOM Elements
@@ -407,8 +404,6 @@ const telegramLogShowMore = document.getElementById("telegram-log-show-more");
 
 // --- Initialization ---
 document.addEventListener("DOMContentLoaded", async () => {
-  const exchangeRatePromise = fetchExchangeRate();
-
   // Load connection settings
   if (sbUrlInput) sbUrlInput.value = supabaseUrl;
   if (sbAnonKeyInput) sbAnonKeyInput.value = supabaseAnonKey;
@@ -593,7 +588,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   if (data && data.session) {
     session = data.session;
     if (!(await validateCurrentSession())) {
-      exchangeRatePromise.catch(() => {});
       return;
     }
     updateSourceFilterAccess();
@@ -610,12 +604,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     recordAdminLogin("reload");
     recordAdminTraffic("reload");
     startAdminAliveHeartbeat();
-    await exchangeRatePromise.catch(() => {});
-    await loadGooglePlayAccounts();
-    setupRealtimeSubscriptions();
-    loadDataAndRender();
+    startAuthenticatedDashboardLoad();
   } else {
-    exchangeRatePromise.catch(() => {});
     stopAdminAliveHeartbeat();
     clearRealtimeSubscriptions();
     updateSourceFilterAccess();
@@ -734,6 +724,7 @@ async function forceLogout(message = "Phiên đăng nhập không còn hợp l�
   try {
     stopAdminAliveHeartbeat();
     clearRealtimeSubscriptions();
+    clearDashboardSummaryCache();
     session = null;
     googlePlayAccounts = [];
     updatePlayAccountSelect();
@@ -859,9 +850,7 @@ async function handleLogin(e) {
     recordAdminLogin("login");
     recordAdminTraffic("page_view");
     startAdminAliveHeartbeat();
-    await loadGooglePlayAccounts();
-    setupRealtimeSubscriptions();
-    loadDataAndRender();
+    startAuthenticatedDashboardLoad();
   } catch (err) {
     showError(err.message || "Đăng nhập thất bại. Kiểm tra lại thông tin đăng nhập.");
   } finally {
@@ -878,9 +867,21 @@ async function handleLogout() {
   googlePlayAccounts = [];
   stopAdminAliveHeartbeat();
   clearRealtimeSubscriptions();
+  clearDashboardSummaryCache();
   updatePlayAccountSelect();
   updateSourceFilterAccess();
   showScreen("auth");
+}
+
+function startAuthenticatedDashboardLoad() {
+  const requestedAccountId = currentPlayAccountId();
+  setupRealtimeSubscriptions();
+  loadDataAndRender();
+  loadGooglePlayAccounts().then(() => {
+    if (requestedAccountId === currentPlayAccountId()) return;
+    setupRealtimeSubscriptions();
+    loadDataAndRender();
+  });
 }
 
 function showError(msg) {
@@ -1641,6 +1642,39 @@ async function refreshRealtimeDashboardParts(payload, { animateKpi = true } = {}
 }
 
 // --- Data Fetching ---
+async function fetchDirectDashboardSnapshot(accountId) {
+  const [appsResult, earningsResult] = await Promise.all([
+    supabaseClient
+      .from("apps")
+      .select("*")
+      .eq("play_account_id", accountId)
+      .order("title"),
+    supabaseClient
+      .from("earnings")
+      .select("*")
+      .eq("play_account_id", accountId)
+      .order("month", { ascending: false }),
+  ]);
+  if (appsResult.error) throw appsResult.error;
+  if (earningsResult.error) throw earningsResult.error;
+  return {
+    apps: (appsResult.data || []).map(app => ({
+      ...app,
+      title: cleanAppTitle(app.id, app.title),
+    })),
+    earnings: earningsResult.data || [],
+  };
+}
+
+function applyDirectDashboardSnapshot(snapshot) {
+  serverSummary = null;
+  appMetadataList = [];
+  appsList = snapshot.apps;
+  earningsData = snapshot.earnings;
+  populateAppDropdown();
+  renderDashboard();
+}
+
 async function loadDataAndRender() {
   if (!supabaseClient) return;
   if (isTrafficDetailPage()) {
@@ -1659,6 +1693,8 @@ async function loadDataAndRender() {
     return;
   }
 
+  const requestId = ++dashboardLoadRequestId;
+  const accountId = currentPlayAccountId();
   const skeletonStartedAt = performance.now();
   renderDashboardSkeleton();
 
@@ -1669,56 +1705,70 @@ async function loadDataAndRender() {
     }
   };
 
+  const cachedSummary = readCachedDashboardSummary(accountId);
+  if (cachedSummary) {
+    applyDashboardSummary(cachedSummary);
+    populateAppDropdown();
+    renderDashboard();
+    renderTopPlayers();
+  }
+
+  let summaryApplied = false;
+  let directSnapshotRendered = false;
+  const directSnapshotPromise = cachedSummary
+    ? Promise.resolve(null)
+    : fetchDirectDashboardSnapshot(accountId).catch((err) => {
+      console.warn("Không tải được snapshot dashboard trực tiếp:", err);
+      return null;
+    });
+  directSnapshotPromise.then((snapshot) => {
+    if (!snapshot || summaryApplied) return;
+    if (requestId !== dashboardLoadRequestId || accountId !== currentPlayAccountId()) return;
+    applyDirectDashboardSnapshot(snapshot);
+    directSnapshotRendered = true;
+  });
+
+  const loadSecondaryCards = () => {
+    Promise.allSettled([
+      populateTopPlayersMonthOptions(),
+      loadTrafficLogs(),
+      loadLoginLogs(),
+      loadTelegramLogs(),
+    ]).catch(() => {});
+  };
+
   // Preferred path: pull everything from the shared `dashboard-summary` edge
   // function so the KPI numbers, exchange rate, and app titles match the
   // Telegram bot exactly (same computation, same rate snapshot).
   try {
-    const s = await fetchDashboardSummary();
+    const s = await fetchDashboardSummary(accountId);
+    if (requestId !== dashboardLoadRequestId || accountId !== currentPlayAccountId()) return;
+    summaryApplied = true;
     applyDashboardSummary(s);
+    cacheDashboardSummary(s, accountId);
     populateAppDropdown();
-    await waitForVisibleSkeleton();
-    renderDashboard({ animateLatestKpi: true });
-    await populateTopPlayersMonthOptions();
+    if (!cachedSummary) await waitForVisibleSkeleton();
+    renderDashboard({ animateLatestKpi: !cachedSummary });
     renderTopPlayers();
-    await loadTrafficLogs();
-    await loadLoginLogs();
-    await loadTelegramLogs();
+    loadSecondaryCards();
     return;
   } catch (err) {
+    if (requestId !== dashboardLoadRequestId || accountId !== currentPlayAccountId()) return;
     console.warn("dashboard-summary fetch failed, falling back:", err);
+    if (cachedSummary) {
+      loadSecondaryCards();
+      return;
+    }
   }
 
   // Fallback: read the tables directly (KPIs then computed client-side).
-  serverSummary = null;
-  appMetadataList = [];
   try {
-    const { data: apps, error: appsErr } = await supabaseClient
-      .from("apps")
-      .select("*")
-      .eq("play_account_id", currentPlayAccountId())
-      .order("title");
-    if (appsErr) throw appsErr;
-    appsList = (apps || []).map(a => ({
-      ...a,
-      title: cleanAppTitle(a.id, a.title)
-    }));
-
-    const { data: earnings, error: earnErr } = await supabaseClient
-      .from("earnings")
-      .select("*")
-      .eq("play_account_id", currentPlayAccountId())
-      .order("month", { ascending: false });
-    if (earnErr) throw earnErr;
-    earningsData = earnings || [];
-
-    populateAppDropdown();
-    await waitForVisibleSkeleton();
-    renderDashboard({ animateLatestKpi: true });
-    await populateTopPlayersMonthOptions();
+    const snapshot = await directSnapshotPromise;
+    if (requestId !== dashboardLoadRequestId || accountId !== currentPlayAccountId()) return;
+    if (!snapshot) throw new Error("Không tải được dữ liệu dashboard");
+    if (!directSnapshotRendered) applyDirectDashboardSnapshot(snapshot);
     renderTopPlayers();
-    await loadTrafficLogs();
-    await loadLoginLogs();
-    await loadTelegramLogs();
+    loadSecondaryCards();
   } catch (err) {
     console.error("Lỗi khi tải dữ liệu:", err);
     alert("Không thể tải dữ liệu từ Supabase: " + err.message);
@@ -3959,23 +4009,28 @@ async function populateTopPlayersMonthOptions() {
   months.add(currentMonthKeyVN());
 
   try {
-    const pageSize = 1000;
-    const maxRows = 10000;
     const appIds = activeAccountAppIds();
     if (!appIds.length) throw new Error("Không có app cho account đang chọn");
-    for (let from = 0; from < maxRows; from += pageSize) {
-      const { data, error } = await supabaseClient
-        .from("client_purchase_logs")
-        .select("created_at")
-        .in("package_name", appIds)
-        .order("created_at", { ascending: false, nullsFirst: false })
-        .range(from, from + pageSize - 1);
-      if (error) throw error;
-      for (const row of data || []) {
-        const monthKey = monthKeyFromIsoVN(row.created_at);
-        if (monthKey) months.add(monthKey);
+    const { data, error } = await supabaseClient
+      .from("client_purchase_logs")
+      .select("created_at")
+      .in("package_name", appIds)
+      .order("created_at", { ascending: true, nullsFirst: false })
+      .limit(1);
+    if (error) throw error;
+    const oldestMonth = monthKeyFromIsoVN(data && data[0] && data[0].created_at);
+    const latestMonth = currentMonthKeyVN();
+    if (oldestMonth) {
+      let year = Number(oldestMonth.slice(0, 4));
+      let month = Number(oldestMonth.slice(4, 6));
+      while (`${year}${String(month).padStart(2, "0")}` <= latestMonth) {
+        months.add(`${year}${String(month).padStart(2, "0")}`);
+        month += 1;
+        if (month > 12) {
+          year += 1;
+          month = 1;
+        }
       }
-      if (!data || data.length < pageSize) break;
     }
   } catch (err) {
     console.warn("Không tải được danh sách tháng client_purchase_logs:", err);
