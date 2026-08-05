@@ -87,12 +87,13 @@ function renderKeyTable(entries) {
     const reason = e.error
       ? `<div class="cell-err" title="${escapeAttr(e.error)}">${escapeAttr(e.error)}</div>`
       : '';
+    // data-label để CSS mobile đổi bảng thành card list (::before lấy tên cột)
     return `<tr class="${e.key === nextKey ? 'next' : ''}">
-      <td class="k">${e.masked}</td>
-      <td>${e.tier}</td>
-      <td>${usage}</td>
-      <td>${fmt(e.remaining)}</td>
-      <td class="st"><span class="badge ${st.cls}">${st.label}</span>${reason}</td>
+      <td class="k" data-label="Key">${e.masked}</td>
+      <td data-label="Tier">${e.tier}</td>
+      <td data-label="Đã dùng">${usage}</td>
+      <td data-label="Còn lại">${fmt(e.remaining)}</td>
+      <td class="st" data-label="Trạng thái"><span class="badge ${st.cls}">${st.label}</span>${reason}</td>
     </tr>`;
   }).join('');
 
@@ -266,12 +267,10 @@ function renderCreditEst() {
   const el = $('creditEst');
   const rate = rateFor($('model').value);
   const cost = currentCost();
-  const rateLbl = `${rate}× credits/ký tự`;
-
-  el.textContent = cost ? `≈ ${fmt(cost)} credits · ${rateLbl}` : rateLbl;
+  el.textContent = cost ? `≈ ${fmt(cost)} credits` : '';
   el.title = cost
-    ? `Ước tính ${fmt(cost)} credits (${rateLbl}). Số thật do ElevenLabs chốt khi generate.`
-    : `Model này tốn ${rateLbl}`;
+    ? `${rate}× credits/ký tự. Số thật do ElevenLabs chốt khi generate.`
+    : '';
 
   const measured = pool.keys.some((k) => pool.quota[k]?.remaining !== undefined);
   el.classList.toggle('over', Boolean(cost && measured && !pool.peek(cost)));

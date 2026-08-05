@@ -401,4 +401,79 @@ td.st { white-space: normal; max-width: 260px; }
 @media (max-width: 560px) {
   .grid2, .sliders { grid-template-columns: 1fr; }
   .head h1 { font-size: 22px; }
+  .wrap { padding: 20px 12px calc(40px + env(safe-area-inset-bottom)); }
+  .head { margin-bottom: 16px; }
+  .card-head, details.card > summary { padding: 12px 13px; }
+  .card-body { padding: 13px; }
+
+  /* iOS zoom vào input nào có font < 16px khi focus — giữ đúng 16px để không nhảy layout */
+  textarea, select, input[type="text"] { font-size: 16px; }
+  #keysInput { font-size: 13px; }
+
+  /* Nút trong hàng thao tác: chia đều 2 cột, nút chính chiếm cả dòng */
+  .card-body > .row:not(.nowrap) { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .card-body > .row:not(.nowrap) > .btn { justify-content: center; }
+  .card-body > .row:not(.nowrap) > .btn.primary, .btn.big { grid-column: 1 / -1; }
+  .status { grid-column: 1 / -1; text-align: center; }
+
+  /* Tap target đủ lớn cho ngón tay */
+  .btn { padding: 10px 14px; }
+  .btn.sm { padding: 8px 12px; }
+  .btn.icon { padding: 10px 12px; }
+  .seg button { padding: 10px 4px; }
+  input[type="range"] { height: 6px; }
+  input[type="range"]::-webkit-slider-thumb { width: 20px; height: 20px; }
+
+  .meta-row { flex-wrap: wrap; row-gap: 2px; }
+  .meta-row #pickInfo { flex-basis: 100%; }
+
+  /* Bảng trạng thái key → card list, tránh scroll ngang trên máy hẹp */
+  .table-scroll { overflow-x: visible; }
+  #keyTable, #keyTable tbody, #keyTable tr, #keyTable td { display: block; width: 100%; }
+  #keyTable thead { display: none; }
+  #keyTable tr {
+    border: 1px solid var(--bd);
+    border-radius: 8px;
+    padding: 9px 11px;
+    margin-bottom: 8px;
+  }
+  #keyTable tr:last-child { margin-bottom: 0; }
+  #keyTable td {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    border: none;
+    padding: 3px 0;
+    white-space: normal;
+    max-width: none;
+  }
+  #keyTable td::before {
+    content: attr(data-label);
+    flex: none;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--fg-dim);
+  }
+  #keyTable tr.next { border-color: var(--accent-dim); }
+  #keyTable tr.next td { background: none; }
+  #keyTable tr.next td.k::before { content: attr(data-label); color: var(--accent); }
+  #keyTable td.st { flex-wrap: wrap; }
+  .cell-err { flex-basis: 100%; text-align: right; }
+
+  /* Summary chật: tóm tắt key xuống dòng riêng thay vì bị cắt chữ */
+  details.card > summary { flex-wrap: wrap; }
+  details.card > summary::after { order: 2; }
+  .active-key { order: 3; flex-basis: 100%; }
+
+  /* Player: audio chiếm cả dòng, nút tải nằm dưới */
+  .player { flex-wrap: wrap; }
+  .player audio { flex-basis: 100%; }
+  .player #download { width: 100%; justify-content: center; }
+
+  /* Lịch sử: 1 dòng text + hàng nút riêng, không bóp chữ còn 2 ký tự */
+  .history li { flex-wrap: wrap; row-gap: 8px; }
+  .history .h-main { flex-basis: 100%; order: -1; }
+  .history li > .btn { flex: 1; justify-content: center; }
 }
