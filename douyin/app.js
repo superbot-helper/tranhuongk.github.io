@@ -533,11 +533,60 @@ const HARVEST_SNIPPET = `(async () => {
   console.log(out); return ids.size + ' link đã copy';
 })()`;
 
+// Text share của app Douyin dính liền chữ Trung + tham số tracking, nên bắt URL
+// bằng regex thay vì tách token theo khoảng trắng.
+const LINK_RE = /(?:https?:\/\/)?(?:v\.douyin\.com|(?:www\.)?douyin\.com|(?:www\.)?iesdouyin\.com)\/[^\s"'<>()，。、【】\[\]]+/gi;
+const SEC_UID_RE = /MS4wLjABAAAA[A-Za-z0-9_\-.]{10,120}/;
+
 function linksFromText(text) {
-  return text
-    .split(/[\s,"]+/)
-    .map((token) => token.trim())
-    .filter((token) => /douyin\.com\/(video|note|slides|user)\/|v\.douyin\.com|^\d{15,25}$/.test(token));
+  const found = new Set();
+  for (const match of text.matchAll(LINK_RE)) {
+    const url = match[0].replace(/[.,;、。)\]]+$/, "");
+    found.add(/^https?:\/\//i.test(url) ? url : `https://${url}`);
+  }
+  // Chỉ quét ID trần ở phần text không phải URL — nếu không sẽ bắt cả
+  // from_user_id/social_share_id trong query string.
+  const rest = text.replace(LINK_RE, " ");
+  for (const match of rest.matchAll(/\d{15,25}/g)) {
+    found.add(`https://www.douyin.com/video/${match[0]}`);
+  }
+  return [...found];
+}
+
+/** Dán text share → box chỉ còn link đã xử lý, mỗi dòng 1 link. */
+function normalizeLinkBox() {
+  const box = el("linkInput");
+  const links = linksFromText(box.value);
+  if (!links.length) return;
+  const cleaned = links.join("\n");
+  if (cleaned === box.value.trim()) return;
+  box.value = cleaned;
+  status(ui.scanStatus, `Đã tách ${links.length} link từ nội dung dán.`, "ok");
+}
+
+/** Ô Người dùng: giữ lại sec_uid hoặc link profile, bỏ hết chữ và tracking. */
+function normalizeProfileBox() {
+  const box = el("profileUrl");
+  const raw = box.value;
+  if (!raw.trim()) return;
+
+  const secUid = raw.match(SEC_UID_RE);
+  if (secUid) {
+    const cleaned = `https://www.douyin.com/user/${secUid[0]}`;
+    if (cleaned !== raw.trim()) {
+      box.value = cleaned;
+      status(ui.scanStatus, "Đã tách link profile từ nội dung dán.", "ok");
+      savePrefs();
+    }
+    return;
+  }
+
+  const links = linksFromText(raw);
+  if (links.length && links[0] !== raw.trim()) {
+    box.value = links[0];
+    status(ui.scanStatus, "Đã tách link profile từ nội dung dán.", "ok");
+    savePrefs();
+  }
 }
 
 async function importFromText(text) {
@@ -552,7 +601,16 @@ el("focusImport").addEventListener("click", () => {
   el("importCard").scrollIntoView({ behavior: "smooth", block: "center" });
 });
 
-el("resolvePasted").addEventListener("click", () => importFromText(el("linkInput").value));
+el("resolvePasted").addEventListener("click", () => {
+  normalizeLinkBox();
+  return importFromText(el("linkInput").value);
+});
+
+// setTimeout 0: chờ nội dung paste vào DOM rồi mới chuẩn hoá.
+el("linkInput").addEventListener("paste", () => setTimeout(normalizeLinkBox, 0));
+el("linkInput").addEventListener("blur", normalizeLinkBox);
+el("profileUrl").addEventListener("paste", () => setTimeout(normalizeProfileBox, 0));
+el("profileUrl").addEventListener("blur", normalizeProfileBox);
 
 el("copySnippet").addEventListener("click", async () => {
   try {

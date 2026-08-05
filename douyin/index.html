@@ -6,7 +6,7 @@
 <title>Douyin Downloader — quét & tải video</title>
 <link rel="icon" href="../avt_x.png">
 <!-- Bump ?v= mỗi lần sửa asset để tránh browser/CDN trả bản cache cũ -->
-<link rel="stylesheet" href="style.css?v=1">
+<link rel="stylesheet" href="style.css?v=2">
 </head>
 <body>
 <div class="wrap">
@@ -85,7 +85,7 @@
 
           <label class="lbl" for="profileUrl">Người dùng</label>
           <textarea id="profileUrl" rows="3" spellcheck="false"
-            placeholder="https://www.douyin.com/user/MS4wLjABAAAA…  (hoặc dán sec_uid)"></textarea>
+            placeholder="Dán link profile hoặc cả đoạn share của app — box sẽ tự thu lại thành link"></textarea>
 
           <label class="lbl" for="scanMax">Quét tối đa</label>
           <input type="number" id="scanMax" min="1" max="2000" value="200">
@@ -113,9 +113,9 @@
           <textarea id="snippetBox" rows="4" readonly spellcheck="false"></textarea>
           <button class="btn sm" id="copySnippet">Copy snippet</button>
 
-          <label class="lbl" for="linkInput">Link video (mỗi dòng 1 link, hoặc dán CSV đã xuất)</label>
+          <label class="lbl" for="linkInput">Link video — dán gì cũng được, box tự tách thành link sạch</label>
           <textarea id="linkInput" rows="5" spellcheck="false"
-            placeholder="https://www.douyin.com/video/7669404132742683051&#10;https://v.douyin.com/xxxxxxx/"></textarea>
+            placeholder="Dán cả đoạn share của app, hoặc nhiều link, hoặc CSV đã xuất…"></textarea>
           <div class="row gap">
             <button class="btn primary" id="resolvePasted">Lấy metadata</button>
             <button class="btn" id="importFileBtn">Từ file .txt/.csv</button>
@@ -200,6 +200,6 @@
 </div>
 
 <input type="file" id="importFile" accept=".txt,.csv" hidden>
-<script src="app.js?v=1"></script>
+<script src="app.js?v=2"></script>
 </body>
 </html>
