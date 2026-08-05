@@ -26,8 +26,24 @@ function capsFor(modelId) {
   return { style: true, speed: true, stabilityStep: 0.05 };
 }
 
+/**
+ * Credits ElevenLabs trừ trên mỗi ký tự, theo model. Flash/Turbo rẻ nửa giá,
+ * các model còn lại 1 credit/ký tự. Quota trong /user/subscription tính bằng credits.
+ */
+const CREDIT_RATE = {
+  eleven_flash_v2_5: 0.5,
+  eleven_flash_v2: 0.5,
+  eleven_turbo_v2_5: 0.5,
+  eleven_turbo_v2: 0.5,
+};
+const rateFor = (modelId) => CREDIT_RATE[modelId] ?? 1;
+const creditCost = (chars, modelId) => Math.ceil(chars * rateFor(modelId));
+
 const $ = (id) => document.getElementById(id);
 const fmt = (n) => (n === undefined || n === null ? '—' : n.toLocaleString('vi-VN'));
+
+/** Credits ước tính cho nội dung đang có trong ô văn bản. */
+const currentCost = () => creditCost($('text').value.trim().length, $('model').value);
 
 const Store = window.HistoryStore;
 
@@ -63,7 +79,7 @@ function savePrefs() {
 
 function renderKeyTable(entries) {
   const tbody = $('keyTable').querySelector('tbody');
-  const nextKey = pool.peek($('text').value.length);
+  const nextKey = pool.peek(currentCost());
 
   tbody.innerHTML = entries.map((e) => {
     const st = EL.STATUS[e.status] || EL.STATUS.unknown;
@@ -121,8 +137,7 @@ function escapeAttr(s) {
 }
 
 function updatePickInfo() {
-  const chars = $('text').value.length;
-  const key = pool.peek(chars);
+  const key = pool.peek(currentCost());
   const info = $('pickInfo');
   if (!pool.keys.length) {
     info.textContent = 'chưa có key';
@@ -241,12 +256,29 @@ function updateCharCount() {
   const el = $('charCount');
   el.textContent = max ? `${fmt(n)} / ${fmt(max)} ký tự` : `${fmt(n)} ký tự`;
   el.classList.toggle('over', Boolean(max && n > max));
+  renderCreditEst();
   updatePickInfo();
   renderNextKeyHighlight();
 }
 
+/** Ước tính credits sẽ bị trừ cho đoạn văn bản hiện tại, kèm cảnh báo nếu không key nào đủ. */
+function renderCreditEst() {
+  const el = $('creditEst');
+  const rate = rateFor($('model').value);
+  const cost = currentCost();
+  const rateLbl = `${rate}× credits/ký tự`;
+
+  el.textContent = cost ? `≈ ${fmt(cost)} credits · ${rateLbl}` : rateLbl;
+  el.title = cost
+    ? `Ước tính ${fmt(cost)} credits (${rateLbl}). Số thật do ElevenLabs chốt khi generate.`
+    : `Model này tốn ${rateLbl}`;
+
+  const measured = pool.keys.some((k) => pool.quota[k]?.remaining !== undefined);
+  el.classList.toggle('over', Boolean(cost && measured && !pool.peek(cost)));
+}
+
 function renderNextKeyHighlight() {
-  const nextKey = pool.peek($('text').value.length);
+  const nextKey = pool.peek(currentCost());
   const rows = $('keyTable').querySelectorAll('tbody tr');
   pool.keys.forEach((k, i) => rows[i]?.classList.toggle('next', k === nextKey));
 }
@@ -280,13 +312,14 @@ async function generate() {
   if (!voiceId) return setStatus('Chưa chọn giọng đọc (cần key hợp lệ để tải danh sách).', 'err');
 
   const chars = text.length;
+  const cost = creditCost(chars, $('model').value);
   const tried = [];
   let lastError = '';
   $('generate').disabled = true;
 
   try {
     for (let attempt = 0; attempt < pool.keys.length; attempt++) {
-      const key = pool.pick(chars, tried);
+      const key = pool.pick(cost, tried);
       if (!key) break;
       tried.push(key);
 
@@ -315,9 +348,12 @@ async function generate() {
         }
 
         const blob = await res.blob();
-        pool.consume(key, chars);
+        pool.consume(key, cost);
         showResult(blob, { text, voiceId, key, chars });
-        setStatus(`Xong · ${(blob.size / 1024).toFixed(0)} KB · key ${EL.maskKey(key)}`, 'ok');
+        setStatus(
+          `Xong · ${(blob.size / 1024).toFixed(0)} KB · −${fmt(cost)} credits · key ${EL.maskKey(key)}`,
+          'ok',
+        );
         return;
       } catch (e) {
         lastError = e.message || 'Network error';
@@ -458,6 +494,31 @@ function bind() {
   };
 
   $('text').oninput = updateCharCount;
+
+  $('clearText').onclick = () => {
+    const el = $('text');
+    if (!el.value) return;
+    el.value = '';
+    updateCharCount();
+    el.focus();
+    setStatus('Đã xoá văn bản.', 'ok');
+  };
+
+  // Clipboard API cần HTTPS/localhost + quyền; fallback nhắc user Ctrl/Cmd+V.
+  $('pasteText').onclick = async () => {
+    const el = $('text');
+    try {
+      const txt = await navigator.clipboard.readText();
+      if (!txt) return setStatus('Clipboard đang rỗng.', 'err');
+      el.value = txt;
+      updateCharCount();
+      el.focus();
+      setStatus(`Đã dán ${fmt(txt.length)} ký tự.`, 'ok');
+    } catch {
+      el.focus();
+      setStatus('Trình duyệt chặn đọc clipboard — dán tay bằng Cmd/Ctrl+V.', 'err');
+    }
+  };
 
   $('model').onchange = () => {
     applyModelCaps();

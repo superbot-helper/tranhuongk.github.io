@@ -6,7 +6,7 @@
 <title>ElevenLabs TTS — Multi Key</title>
 <link rel="icon" href="../avt_x.png">
 <!-- Bump ?v= mỗi lần sửa asset để tránh browser/CDN trả bản cache cũ -->
-<link rel="stylesheet" href="style.css?v=5">
+<link rel="stylesheet" href="style.css?v=6">
 </head>
 <body>
 <div class="wrap">
@@ -66,10 +66,17 @@
     <div class="card-head"><h2>Tạo giọng đọc</h2></div>
     <div class="card-body">
 
-      <label class="lbl" for="text">Văn bản</label>
+      <div class="lbl-row">
+        <label class="lbl" for="text">Văn bản</label>
+        <div class="row nowrap">
+          <button class="btn sm" id="pasteText" type="button" title="Dán từ clipboard, thay nội dung hiện tại">⎘ Paste</button>
+          <button class="btn sm danger" id="clearText" type="button" title="Xoá sạch văn bản">✕ Clear</button>
+        </div>
+      </div>
       <textarea id="text" rows="6" placeholder="Nhập văn bản cần đọc…"></textarea>
       <div class="meta-row">
         <span id="charCount">0 ký tự</span>
+        <span id="creditEst" class="credit"></span>
         <span id="pickInfo" class="muted"></span>
       </div>
 
@@ -158,8 +165,8 @@
 
 <audio id="previewAudio"></audio>
 
-<script src="keypool.js?v=5"></script>
-<script src="store.js?v=5"></script>
-<script src="app.js?v=5"></script>
+<script src="keypool.js?v=6"></script>
+<script src="store.js?v=6"></script>
+<script src="app.js?v=6"></script>
 </body>
 </html>
