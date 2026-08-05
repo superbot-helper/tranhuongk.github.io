@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Douyin Downloader — quét & tải video</title>
+<link rel="icon" href="../avt_x.png">
+<!-- Bump ?v= mỗi lần sửa asset để tránh browser/CDN trả bản cache cũ -->
+<link rel="stylesheet" href="style.css?v=1">
+</head>
+<body>
+<div class="wrap">
+
+  <header class="head">
+    <div>
+      <h1>Douyin Downloader</h1>
+      <p class="sub">Quét toàn bộ video của 1 user hoặc dán link lẻ — tải bản không watermark</p>
+    </div>
+    <button class="btn ghost" id="openSettings" title="Cấu hình endpoint">⚙</button>
+  </header>
+
+  <div class="layout">
+
+    <!-- ═══ CỘT TRÁI: DANH SÁCH VIDEO ═══ -->
+    <section class="card list-card">
+      <div class="card-head">
+        <h2>Danh sách video</h2>
+        <div class="row gap tight">
+          <button class="btn sm" id="exportLinks">Xuất link</button>
+          <button class="btn sm primary" id="importLinks">Nhập link</button>
+        </div>
+      </div>
+
+      <div class="stat-bar">
+        <span class="pill">Số lượng video: <b id="statTotal">0</b></span>
+        <span class="pill">Số lượng chọn: <b id="statSelected">0</b></span>
+        <span class="pill">Tải thành công: <b id="statDone">0</b></span>
+        <span class="pill bad" id="statFailWrap" hidden>Lỗi: <b id="statFail">0</b></span>
+        <input type="search" id="filterBox" class="filter-box" placeholder="Lọc theo tên video…">
+      </div>
+
+      <div class="table-scroll">
+        <table class="vtable">
+          <thead>
+            <tr>
+              <th class="c-check"><input type="checkbox" id="checkAll" title="Chọn tất cả"></th>
+              <th class="c-idx">STT</th>
+              <th class="c-name">Tên video</th>
+              <th class="c-url">URL Video</th>
+              <th class="c-num">Bình luận</th>
+              <th class="c-num">Lượt thích</th>
+              <th class="c-num">Lượt phát</th>
+              <th class="c-num">Lượt chia sẻ</th>
+              <th class="c-plat">Nền tảng</th>
+              <th class="c-dur">Thời lượng</th>
+              <th class="c-state">Trạng thái</th>
+            </tr>
+          </thead>
+          <tbody id="videoBody"></tbody>
+        </table>
+        <p class="empty" id="emptyState">Chưa có video. Quét user hoặc <b>Nhập link</b> để bắt đầu.</p>
+      </div>
+
+      <div class="card-foot">
+        <span class="muted" id="rowsInfo">Hiển thị 0 / 0 dữ liệu</span>
+        <div class="row gap tight">
+          <button class="btn sm" id="selectFiltered">Chọn kết quả lọc</button>
+          <button class="btn sm" id="clearSelection">Bỏ chọn</button>
+          <button class="btn sm danger" id="clearList">Xoá danh sách</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ CỘT PHẢI: CẤU HÌNH ═══ -->
+    <aside class="side">
+      <h2 class="side-title">Cấu hình quét và tải video</h2>
+
+      <details class="card" id="scanCard" open>
+        <summary><span>Cấu hình quét video</span></summary>
+        <div class="card-body">
+          <label class="lbl" for="platform">Nền tảng</label>
+          <select id="platform">
+            <option value="douyin">Douyin</option>
+          </select>
+
+          <label class="lbl" for="profileUrl">Người dùng</label>
+          <textarea id="profileUrl" rows="3" spellcheck="false"
+            placeholder="https://www.douyin.com/user/MS4wLjABAAAA…  (hoặc dán sec_uid)"></textarea>
+
+          <label class="lbl" for="scanMax">Quét tối đa</label>
+          <input type="number" id="scanMax" min="1" max="2000" value="200">
+          <p class="hint">Douyin trả ~18–20 video mỗi trang; tool tự lật trang tới khi đủ số này hoặc hết video.</p>
+
+          <button class="btn primary block" id="startScan">▶ Bắt đầu quét</button>
+          <p class="status" id="scanStatus"></p>
+        </div>
+      </details>
+
+      <details class="card" id="dlCard" open>
+        <summary><span>Cấu hình tải video</span></summary>
+        <div class="card-body">
+          <label class="lbl" for="threads">Số luồng tải xuống</label>
+          <div class="row gap">
+            <input type="number" id="threads" min="1" max="8" value="4">
+            <span class="muted">luồng</span>
+          </div>
+
+          <label class="lbl" for="naming">Lưu theo</label>
+          <select id="naming">
+            <option value="title">Tiêu đề video</option>
+            <option value="index_title">STT + Tiêu đề</option>
+            <option value="id">ID video</option>
+          </select>
+
+          <label class="switch">
+            <input type="checkbox" id="useFilter">
+            <span>Tải video theo bộ lọc</span>
+          </label>
+          <div class="filter-grid" id="filterGrid" hidden>
+            <label class="lbl sm" for="minLike">Lượt thích ≥</label>
+            <input type="number" id="minLike" min="0" value="0">
+            <label class="lbl sm" for="minPlay">Lượt phát ≥</label>
+            <input type="number" id="minPlay" min="0" value="0">
+          </div>
+
+          <label class="lbl">Nơi lưu file</label>
+          <label class="radio">
+            <input type="radio" name="dest" value="browser" checked>
+            <span>Thư mục tải xuống của trình duyệt</span>
+          </label>
+          <label class="radio">
+            <input type="radio" name="dest" value="folder">
+            <span>Lưu file ở mục khác</span>
+          </label>
+          <div class="row gap" id="folderRow">
+            <input type="text" id="folderName" readonly placeholder="Chưa chọn thư mục">
+            <button class="btn sm" id="pickFolder" title="Chọn thư mục">📁</button>
+          </div>
+          <p class="hint" id="fsHint"></p>
+
+          <button class="btn primary block" id="startDownload">▶ Bắt đầu tải</button>
+          <button class="btn block" id="stopDownload" hidden>■ Dừng tải</button>
+          <div class="progress" id="progressWrap" hidden>
+            <div class="progress-bar"><i id="progressBar"></i></div>
+            <span class="muted" id="progressText"></span>
+          </div>
+        </div>
+      </details>
+
+      <details class="card" id="settingsCard">
+        <summary><span>Endpoint</span></summary>
+        <div class="card-body">
+          <p class="hint">
+            Trang tĩnh không gọi trực tiếp được Douyin (CDN không có CORS, API web đòi signature)
+            nên mọi request đi qua Supabase edge function <code>douyin</code>.
+          </p>
+          <label class="lbl" for="endpoint">Function URL</label>
+          <input type="text" id="endpoint" spellcheck="false">
+          <div class="row gap">
+            <button class="btn sm" id="testEndpoint">Test endpoint</button>
+            <button class="btn sm" id="resetEndpoint">Mặc định</button>
+          </div>
+          <p class="status" id="endpointStatus"></p>
+        </div>
+      </details>
+    </aside>
+
+  </div>
+
+  <p class="foot-note">
+    Tool chỉ tải video công khai. Tôn trọng bản quyền của tác giả gốc khi sử dụng lại nội dung.
+  </p>
+</div>
+
+<input type="file" id="importFile" accept=".txt,.csv" hidden>
+<script src="app.js?v=1"></script>
+</body>
+</html>
