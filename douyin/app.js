@@ -105,7 +105,11 @@ async function callApi(params, signal) {
   for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
   const response = await fetch(url, { signal });
   const payload = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
-  if (!response.ok || payload.error) throw new Error(payload.error || `HTTP ${response.status}`);
+  if (!response.ok || payload.error) {
+    const error = new Error(payload.error || `HTTP ${response.status}`);
+    error.payload = payload; // giữ `kind`/`secUid` để caller xử lý riêng
+    throw error;
+  }
   return payload;
 }
 
@@ -257,6 +261,7 @@ async function resolveLinks(links) {
   status(ui.scanStatus, `Đang lấy metadata 0/${unique.length}…`, "run");
 
   const queue = unique.slice();
+  const profiles = new Set();
   await Promise.all(Array.from({ length: Math.min(threads, queue.length) }, async () => {
     while (queue.length) {
       const link = queue.shift();
@@ -265,12 +270,26 @@ async function resolveLinks(links) {
         addItems([payload.item]);
       } catch (err) {
         failed++;
+        // Link share profile: nhận sec_uid từ function, đưa sang phần quét user.
+        if (err.payload?.kind === "user" && err.payload.secUid) profiles.add(err.payload.secUid);
         console.warn("resolve failed", link, err);
       }
       done++;
       status(ui.scanStatus, `Đang lấy metadata ${done}/${unique.length}…`, "run");
     }
   }));
+
+  if (profiles.size) {
+    el("profileUrl").value = [...profiles].join("\n");
+    savePrefs();
+    status(
+      ui.scanStatus,
+      `${profiles.size} link là share profile (không phải share video) — đã điền sec_uid vào ô Người dùng. ` +
+        `Danh sách video của user cần snippet "Quét bằng trình duyệt".`,
+      "err",
+    );
+    return;
+  }
 
   status(
     ui.scanStatus,
