@@ -39,6 +39,7 @@ function loadPrefs() {
   } catch {
     prefs = {};
   }
+  el("snippetBox").value = HARVEST_SNIPPET;
   el("endpoint").value = prefs.endpoint || DEFAULT_ENDPOINT;
   el("profileUrl").value = prefs.profileUrl || "";
   el("scanMax").value = prefs.scanMax || 200;
@@ -495,12 +496,61 @@ for (const radio of document.querySelectorAll('input[name="dest"]')) {
   radio.addEventListener("change", savePrefs);
 }
 
-el("importLinks").addEventListener("click", async () => {
-  const text = prompt("Dán link Douyin (mỗi dòng 1 link, hoặc cách nhau bởi dấu phẩy):");
-  if (text === null) return;
-  const links = text.split(/[\s,]+/).filter((link) => /douyin\.com|^\d{15,25}$/.test(link));
-  if (!links.length) return status(ui.scanStatus, "Không tìm thấy link Douyin hợp lệ.", "err");
+/** Chạy trong Console của tab profile Douyin: JS của Douyin tự ký request khi cuộn. */
+const HARVEST_SNIPPET = `(async () => {
+  const ids = new Set(); let last = 0, stale = 0;
+  const grab = () => document.querySelectorAll('a[href*="/video/"]').forEach(a => {
+    const m = a.href.match(/\\/video\\/(\\d{15,25})/); if (m) ids.add(m[1]);
+  });
+  while (stale < 5) {
+    grab();
+    if (ids.size === last) stale++; else { stale = 0; last = ids.size; }
+    scrollTo(0, document.body.scrollHeight);
+    console.log('đã thấy', ids.size, 'video');
+    await new Promise(r => setTimeout(r, 1200));
+  }
+  const out = [...ids].map(id => 'https://www.douyin.com/video/' + id).join('\\n');
+  try { await navigator.clipboard.writeText(out); } catch { if (typeof copy === 'function') copy(out); }
+  console.log(out); return ids.size + ' link đã copy';
+})()`;
+
+function linksFromText(text) {
+  return text
+    .split(/[\s,"]+/)
+    .map((token) => token.trim())
+    .filter((token) => /douyin\.com\/(video|note|slides|user)\/|v\.douyin\.com|^\d{15,25}$/.test(token));
+}
+
+async function importFromText(text) {
+  const links = linksFromText(text);
+  if (!links.length) return status(ui.scanStatus, "Không tìm thấy link Douyin hợp lệ trong nội dung dán.", "err");
   await resolveLinks(links);
+}
+
+el("focusImport").addEventListener("click", () => {
+  el("importCard").open = true;
+  el("linkInput").focus();
+  el("importCard").scrollIntoView({ behavior: "smooth", block: "center" });
+});
+
+el("resolvePasted").addEventListener("click", () => importFromText(el("linkInput").value));
+
+el("copySnippet").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(HARVEST_SNIPPET);
+    status(ui.scanStatus, "Đã copy snippet — dán vào Console của tab profile Douyin.", "ok");
+  } catch {
+    el("snippetBox").select();
+    status(ui.scanStatus, "Không copy tự động được — snippet đã được chọn, bấm Ctrl+C.", "err");
+  }
+});
+
+el("importFileBtn").addEventListener("click", () => el("importFile").click());
+el("importFile").addEventListener("change", async (event) => {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  await importFromText(await file.text());
+  event.target.value = "";
 });
 
 ui.filterBox.addEventListener("input", render);

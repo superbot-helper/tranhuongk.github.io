@@ -27,7 +27,7 @@
         <h2>Danh sách video</h2>
         <div class="row gap tight">
           <button class="btn sm" id="exportLinks">Xuất link</button>
-          <button class="btn sm primary" id="importLinks">Nhập link</button>
+          <button class="btn sm primary" id="focusImport">Nhập link</button>
         </div>
       </div>
 
@@ -93,6 +93,33 @@
 
           <button class="btn primary block" id="startScan">▶ Bắt đầu quét</button>
           <p class="status" id="scanStatus"></p>
+          <p class="hint">
+            Douyin chặn API danh sách video bằng risk control (<code>shark_fail</code>) nếu request
+            không có signature — nút này chỉ chạy được khi Douyin nới chặn. Cách chắc chắn:
+            dùng <b>Quét bằng trình duyệt</b> bên dưới.
+          </p>
+        </div>
+      </details>
+
+      <details class="card" id="importCard">
+        <summary><span>Nhập link / Quét bằng trình duyệt</span></summary>
+        <div class="card-body">
+          <ol class="steps">
+            <li>Mở trang profile Douyin trong tab khác (bạn đang đăng nhập sẵn).</li>
+            <li>F12 → tab Console → dán snippet dưới đây → Enter. Nó tự cuộn tới hết và copy link vào clipboard.</li>
+            <li>Quay lại đây, dán vào ô bên dưới → <b>Lấy metadata</b>.</li>
+          </ol>
+          <p class="hint">JS của Douyin tự ký request khi bạn cuộn, nên cách này không cần signature và không hỏng khi Douyin đổi thuật toán.</p>
+          <textarea id="snippetBox" rows="4" readonly spellcheck="false"></textarea>
+          <button class="btn sm" id="copySnippet">Copy snippet</button>
+
+          <label class="lbl" for="linkInput">Link video (mỗi dòng 1 link, hoặc dán CSV đã xuất)</label>
+          <textarea id="linkInput" rows="5" spellcheck="false"
+            placeholder="https://www.douyin.com/video/7669404132742683051&#10;https://v.douyin.com/xxxxxxx/"></textarea>
+          <div class="row gap">
+            <button class="btn primary" id="resolvePasted">Lấy metadata</button>
+            <button class="btn" id="importFileBtn">Từ file .txt/.csv</button>
+          </div>
         </div>
       </details>
 
