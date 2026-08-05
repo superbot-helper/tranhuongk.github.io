@@ -515,23 +515,97 @@ for (const radio of document.querySelectorAll('input[name="dest"]')) {
   radio.addEventListener("change", savePrefs);
 }
 
-/** Chạy trong Console của tab profile Douyin: JS của Douyin tự ký request khi cuộn. */
+const TOOL_URL = `${globalThis.location?.origin ?? "https://tranhuongk.github.io"}${
+  globalThis.location?.pathname ?? "/douyin/"
+}`;
+
+/**
+ * Chạy trong tab profile Douyin (douyin.com/user/...). Gọi thẳng API
+ * `aweme/post` và ký bằng chính `byted_acrawler.frontierSign` của Douyin
+ * (X-Bogus) — lấy đủ danh sách qua max_cursor, không cần cuộn tay, không cần
+ * tự implement signature. Nếu Douyin bỏ frontierSign thì fallback sang cuộn +
+ * hook fetch/XHR để đọc response họ tự ký.
+ */
 const HARVEST_SNIPPET = `(async () => {
-  const ids = new Set(); let last = 0, stale = 0;
-  const grab = () => document.querySelectorAll('a[href*="/video/"]').forEach(a => {
-    const m = a.href.match(/\\/video\\/(\\d{15,25})/); if (m) ids.add(m[1]);
-  });
-  while (stale < 5) {
-    grab();
-    if (ids.size === last) stale++; else { stale = 0; last = ids.size; }
-    scrollTo(0, document.body.scrollHeight);
-    console.log('đã thấy', ids.size, 'video');
-    await new Promise(r => setTimeout(r, 1200));
+  const TOOL = '${TOOL_URL}';
+  const sec = (location.pathname.match(/\\/user\\/([^/?#]+)/) || [])[1];
+  if (!sec) return 'Hãy mở trang profile douyin.com/user/... rồi chạy lại';
+  const finish = async (ids, how) => {
+    const uniq = [...new Set(ids)];
+    try { await navigator.clipboard.writeText(uniq.map(i => 'https://www.douyin.com/video/' + i).join('\\n')); } catch {}
+    const link = TOOL + '#import=' + uniq.slice(0, 800).join(',');
+    const tab = open(link, '_blank');
+    if (!tab) console.log('Popup bị chặn — mở link này:', link);
+    return uniq.length + ' video (' + how + ')' + (tab ? ' — đã mở tool kèm danh sách' : ' — link đã copy + in ở trên');
+  };
+  try {
+    const base = { device_platform: 'webapp', aid: '6383', channel: 'channel_pc_web', sec_user_id: sec,
+      locate_query: 'false', show_live_replay_strategy: '1', count: '18', publish_video_strategy_type: '2',
+      pc_client_type: '1', version_code: '190500', version_name: '19.5.0', cookie_enabled: 'true', platform: 'PC',
+      browser_language: 'zh-CN', browser_platform: 'Win32', browser_name: 'Chrome', browser_version: '131.0.0.0',
+      engine_name: 'Blink', os_name: 'Windows', os_version: '10' };
+    const ids = [];
+    let cursor = 0, more = 1, page = 0;
+    while (more && page++ < 200) {
+      const u = new URL('https://www.douyin.com/aweme/v1/web/aweme/post/');
+      Object.entries({ ...base, max_cursor: String(cursor) }).forEach(([k, v]) => u.searchParams.set(k, v));
+      const sig = byted_acrawler.frontierSign({ url: u.toString() });
+      const j = await (await fetch(u.toString() + '&X-Bogus=' + encodeURIComponent(sig['X-Bogus']), { credentials: 'include' })).json();
+      const list = j.aweme_list || [];
+      list.forEach(a => a && a.aweme_id && ids.push(a.aweme_id));
+      console.log('trang', page, '→', ids.length, 'video');
+      more = j.has_more; cursor = j.max_cursor;
+      if (!list.length) break;
+      await new Promise(r => setTimeout(r, 400));
+    }
+    if (ids.length) return await finish(ids, 'API');
+    throw new Error('API không trả video');
+  } catch (e) {
+    console.warn('API path lỗi, chuyển sang cuộn:', e);
+    const ids = new Set();
+    const eat = j => (j && Array.isArray(j.aweme_list) ? j.aweme_list : []).forEach(a => a && a.aweme_id && ids.add(a.aweme_id));
+    const isPost = u => /aweme\\/post/.test(u || '');
+    const of = window.fetch;
+    window.fetch = async (...a) => {
+      const r = await of(...a);
+      const u = typeof a[0] === 'string' ? a[0] : (a[0] && a[0].url) || '';
+      if (isPost(u)) r.clone().json().then(eat).catch(() => {});
+      return r;
+    };
+    const pick = () => [document.scrollingElement, ...document.querySelectorAll('div')]
+      .filter(el => el && el.scrollHeight > el.clientHeight + 80 && /auto|scroll/.test(getComputedStyle(el).overflowY))
+      .sort((a, b) => b.scrollHeight - a.scrollHeight)[0] || document.scrollingElement;
+    const hrefs = () => document.querySelectorAll('a[href*="/video/"]').forEach(a => {
+      const m = a.href.match(/\\/video\\/(\\d{15,25})/); if (m) ids.add(m[1]);
+    });
+    let last = 0, stale = 0;
+    while (stale < 6) {
+      hrefs();
+      if (ids.size === last) stale++; else { stale = 0; last = ids.size; }
+      const s = pick(); s.scrollTop = s.scrollHeight;
+      console.log('đã thấy', ids.size, 'video');
+      await new Promise(r => setTimeout(r, 1200));
+    }
+    return await finish([...ids], 'cuộn');
   }
-  const out = [...ids].map(id => 'https://www.douyin.com/video/' + id).join('\\n');
-  try { await navigator.clipboard.writeText(out); } catch { if (typeof copy === 'function') copy(out); }
-  console.log(out); return ids.size + ' link đã copy';
 })()`;
+
+/** Bookmarklet mở tool kèm ID (#import=...) — tự resolve metadata ngay khi load. */
+async function importFromHash() {
+  const match = location.hash.match(/[#&]import=([^&]+)/);
+  if (!match) return;
+  history.replaceState(null, "", location.pathname + location.search);
+
+  const links = decodeURIComponent(match[1])
+    .split(/[,\s]+/)
+    .filter(Boolean)
+    .map((token) => (/^\d{15,25}$/.test(token) ? `https://www.douyin.com/video/${token}` : token));
+  if (!links.length) return;
+
+  el("importCard").open = true;
+  el("linkInput").value = links.join("\n");
+  await resolveLinks(links);
+}
 
 // Text share của app Douyin dính liền chữ Trung + tham số tracking, nên bắt URL
 // bằng regex thay vì tách token theo khoảng trắng.
@@ -685,3 +759,4 @@ el("testEndpoint").addEventListener("click", async () => {
 
 loadPrefs();
 render();
+importFromHash();

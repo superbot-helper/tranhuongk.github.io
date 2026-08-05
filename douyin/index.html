@@ -6,7 +6,7 @@
 <title>Douyin Downloader — quét & tải video</title>
 <link rel="icon" href="../avt_x.png">
 <!-- Bump ?v= mỗi lần sửa asset để tránh browser/CDN trả bản cache cũ -->
-<link rel="stylesheet" href="style.css?v=2">
+<link rel="stylesheet" href="style.css?v=4">
 </head>
 <body>
 <div class="wrap">
@@ -105,12 +105,17 @@
         <summary><span>Nhập link / Quét bằng trình duyệt</span></summary>
         <div class="card-body">
           <ol class="steps">
-            <li>Mở trang profile Douyin trong tab khác (bạn đang đăng nhập sẵn).</li>
-            <li>F12 → tab Console → dán snippet dưới đây → Enter. Nó tự cuộn tới hết và copy link vào clipboard.</li>
-            <li>Quay lại đây, dán vào ô bên dưới → <b>Lấy metadata</b>.</li>
+            <li>Mở trang profile trong tab khác: <code>douyin.com/user/&lt;sec_uid&gt;</code></li>
+            <li>F12 → tab Console → dán snippet dưới đây → Enter.</li>
+            <li>Nó lật hết trang API rồi <b>tự mở lại tool này kèm sẵn toàn bộ video</b> — không cần dán tay.</li>
           </ol>
-          <p class="hint">JS của Douyin tự ký request khi bạn cuộn, nên cách này không cần signature và không hỏng khi Douyin đổi thuật toán.</p>
-          <textarea id="snippetBox" rows="4" readonly spellcheck="false"></textarea>
+          <p class="hint">
+            Snippet gọi thẳng API <code>aweme/post</code> và ký bằng chính hàm
+            <code>byted_acrawler.frontierSign</code> của Douyin (<code>X-Bogus</code>), lật trang qua
+            <code>max_cursor</code> tới hết — nên không cần tự implement signature. Nếu Douyin bỏ hàm đó,
+            snippet tự lùi về cách cuộn + đọc response. Link cũng được copy vào clipboard để dự phòng.
+          </p>
+          <textarea id="snippetBox" rows="6" readonly spellcheck="false"></textarea>
           <button class="btn sm" id="copySnippet">Copy snippet</button>
 
           <label class="lbl" for="linkInput">Link video — dán gì cũng được, box tự tách thành link sạch</label>
@@ -200,6 +205,6 @@
 </div>
 
 <input type="file" id="importFile" accept=".txt,.csv" hidden>
-<script src="app.js?v=2"></script>
+<script src="app.js?v=4"></script>
 </body>
 </html>
