@@ -6,7 +6,7 @@
 <title>Douyin Downloader — quét & tải video</title>
 <link rel="icon" href="../avt_x.png">
 <!-- Bump ?v= mỗi lần sửa asset để tránh browser/CDN trả bản cache cũ -->
-<link rel="stylesheet" href="style.css?v=6">
+<link rel="stylesheet" href="style.css?v=9">
 </head>
 <body>
 <div class="wrap">
@@ -44,16 +44,16 @@
           <thead>
             <tr>
               <th class="c-check"><input type="checkbox" id="checkAll" title="Chọn tất cả"></th>
-              <th class="c-idx">STT</th>
+              <th class="c-idx"><button class="sort" data-sort="index">STT</button></th>
               <th class="c-thumb">Ảnh</th>
-              <th class="c-name">Tên video</th>
+              <th class="c-name"><button class="sort" data-sort="title">Tên video</button></th>
               <th class="c-url">URL Video</th>
-              <th class="c-num">Bình luận</th>
-              <th class="c-num">Lượt thích</th>
-              <th class="c-num">Lượt chia sẻ</th>
+              <th class="c-num"><button class="sort" data-sort="comment">Bình luận</button></th>
+              <th class="c-num"><button class="sort" data-sort="like">Lượt thích</button></th>
+              <th class="c-num"><button class="sort" data-sort="share">Lượt chia sẻ</button></th>
               <th class="c-plat">Nền tảng</th>
-              <th class="c-dur">Thời lượng</th>
-              <th class="c-state">Trạng thái</th>
+              <th class="c-dur"><button class="sort" data-sort="duration">Thời lượng</button></th>
+              <th class="c-state"><button class="sort" data-sort="state">Trạng thái</button></th>
             </tr>
           </thead>
           <tbody id="videoBody"></tbody>
@@ -202,6 +202,6 @@
 </div>
 
 <input type="file" id="importFile" accept=".txt,.csv" hidden>
-<script src="app.js?v=6"></script>
+<script src="app.js?v=9"></script>
 </body>
 </html>

@@ -47,6 +47,8 @@ function loadPrefs() {
   el("naming").value = prefs.naming || "title";
   el("useFilter").checked = Boolean(prefs.useFilter);
   el("minLike").value = prefs.minLike || 0;
+  if (prefs.sortKey && SORT_VALUES[prefs.sortKey]) sortKey = prefs.sortKey;
+  if (prefs.sortDir === "asc" || prefs.sortDir === "desc") sortDir = prefs.sortDir;
   const dest = prefs.dest === "folder" ? "folder" : "browser";
   document.querySelector(`input[name="dest"][value="${dest}"]`).checked = true;
   syncFilterVisibility();
@@ -62,6 +64,8 @@ function savePrefs() {
     naming: el("naming").value,
     useFilter: el("useFilter").checked,
     minLike: Number(el("minLike").value),
+    sortKey,
+    sortDir,
     dest: destValue(),
   };
   localStorage.setItem(LS_KEY, JSON.stringify(prefs));
@@ -133,11 +137,59 @@ function downloadUrl(item, filename) {
 
 /* ═══════════════════════ render ═══════════════════════ */
 
+// Thứ tự hiển thị: lọc trước rồi sắp xếp. `index` là thứ tự nạp vào ban đầu nên
+// bấm STT là về lại trạng thái gốc.
+const SORT_VALUES = {
+  index: (item) => items.indexOf(item),
+  title: (item) => (item.title || "").toLowerCase(),
+  comment: (item) => item.stats?.comment ?? -1,
+  like: (item) => item.stats?.like ?? -1,
+  share: (item) => item.stats?.share ?? -1,
+  duration: (item) => item.duration ?? -1,
+  state: (item) => item.state || "wait",
+};
+
+let sortKey = "index";
+let sortDir = "asc";
+
 function filteredItems() {
   const query = ui.filterBox.value.trim().toLowerCase();
-  if (!query) return items;
-  return items.filter((item) => (item.title || "").toLowerCase().includes(query) ||
-    (item.awemeId || "").includes(query));
+  const matched = query
+    ? items.filter((item) => (item.title || "").toLowerCase().includes(query) ||
+      (item.awemeId || "").includes(query))
+    : items.slice();
+
+  const value = SORT_VALUES[sortKey] ?? SORT_VALUES.index;
+  const sign = sortDir === "asc" ? 1 : -1;
+  return matched.sort((a, b) => {
+    const va = value(a);
+    const vb = value(b);
+    if (va === vb) return SORT_VALUES.index(a) - SORT_VALUES.index(b); // giữ thứ tự gốc khi bằng nhau
+    return typeof va === "string" ? sign * va.localeCompare(vb, "vi") : sign * (va - vb);
+  });
+}
+
+function applySort(key) {
+  if (sortKey === key) {
+    sortDir = sortDir === "asc" ? "desc" : "asc";
+  } else {
+    sortKey = key;
+    // Số/thời lượng thường muốn xem cao nhất trước; text thì A→Z.
+    sortDir = key === "title" || key === "index" || key === "state" ? "asc" : "desc";
+  }
+  savePrefs();
+  render();
+}
+
+function paintSortHeaders() {
+  for (const button of document.querySelectorAll("th .sort")) {
+    const active = button.dataset.sort === sortKey;
+    button.classList.toggle("active", active);
+    button.dataset.dir = active ? sortDir : "";
+    button.title = active
+      ? `Đang sắp xếp ${sortDir === "asc" ? "tăng dần" : "giảm dần"} — bấm để đảo`
+      : "Bấm để sắp xếp theo cột này";
+  }
 }
 
 function render() {
@@ -167,6 +219,7 @@ function render() {
 
   ui.empty.hidden = visible.length > 0;
   ui.rowsInfo.textContent = `Hiển thị ${visible.length} / ${items.length} dữ liệu`;
+  paintSortHeaders();
   watchThumbs();
   updateStats();
 }
@@ -222,11 +275,14 @@ function updateStats() {
   ui.checkAll.checked = visible.length > 0 && visible.every((item) => item.selected);
 }
 
-/** Cập nhật 1 dòng thay vì render lại cả bảng — tránh giật khi tải song song. */
+/**
+ * Cập nhật 1 dòng thay vì render lại cả bảng — tránh giật khi tải song song.
+ * Tìm dòng theo `data-id` chứ không theo vị trí: khi đang sort theo Trạng thái,
+ * state vừa đổi là thứ tự đã khác, map theo index sẽ tô sai dòng.
+ */
 function refreshRow(item) {
-  const index = filteredItems().indexOf(item);
-  if (index < 0) return;
-  const tr = ui.body.children[index];
+  const box = ui.body.querySelector(`input[data-id="${item.awemeId}"]`);
+  const tr = box?.closest("tr");
   if (!tr) return;
   const cell = tr.lastElementChild.firstElementChild;
   cell.className = `state ${item.state || "wait"}`;
@@ -493,17 +549,38 @@ function fileName(item, index) {
   return `${base}.mp4`;
 }
 
+/**
+ * Chrome hỏi quyền ghi 2 lần: lúc chọn thư mục và lúc thật sự ghi. Xin sẵn ở đây
+ * để không phát hiện thiếu quyền giữa lúc đang tải 60 file.
+ */
+async function ensureWritable(handle) {
+  const options = { mode: "readwrite" };
+  if ((await handle.queryPermission(options)) === "granted") return true;
+  return (await handle.requestPermission(options)) === "granted";
+}
+
 async function pickFolder() {
   if (!window.showDirectoryPicker) {
     return status(ui.scanStatus, "Trình duyệt này không hỗ trợ chọn thư mục (cần Chrome/Edge).", "err");
   }
   try {
-    dirHandle = await window.showDirectoryPicker({ mode: "readwrite", id: "douyin-dl" });
-    el("folderName").value = dirHandle.name;
+    const handle = await window.showDirectoryPicker({ mode: "readwrite", id: "douyin-dl" });
+    if (!(await ensureWritable(handle))) {
+      return status(
+        ui.scanStatus,
+        `Chưa có quyền ghi vào "${handle.name}". Bấm 📁 chọn lại và chọn Allow ở hộp thoại "Allow this site to edit files?".`,
+        "err",
+      );
+    }
+    dirHandle = handle;
+    el("folderName").value = handle.name;
     document.querySelector('input[name="dest"][value="folder"]').checked = true;
     savePrefs();
-  } catch {
-    /* user huỷ hộp thoại */
+    status(ui.scanStatus, `Sẽ lưu file vào thư mục "${handle.name}".`, "ok");
+  } catch (err) {
+    if (err?.name === "AbortError") return; // user đóng hộp thoại, không phải lỗi
+    // Chrome từ chối thẳng vài thư mục hệ thống (ổ C:, Windows, Program Files…).
+    status(ui.scanStatus, `Không chọn được thư mục: ${err?.message || err}`, "err");
   }
 }
 
@@ -566,9 +643,17 @@ async function startDownload() {
   if (!queue.length) return status(ui.scanStatus, "Không có video nào được chọn để tải.", "err");
 
   const useFolder = destValue() === "folder";
-  if (useFolder && !dirHandle) {
-    await pickFolder();
-    if (!dirHandle) return;
+  if (useFolder) {
+    if (!dirHandle) {
+      await pickFolder();
+      if (!dirHandle) return;
+    }
+    // Quyền có thể bị thu hồi sau khi reload tab hoặc đổi thư mục.
+    if (!(await ensureWritable(dirHandle))) {
+      dirHandle = null;
+      el("folderName").value = "";
+      return status(ui.scanStatus, "Mất quyền ghi vào thư mục — bấm 📁 chọn lại rồi chọn Allow.", "err");
+    }
   }
 
   downloading = true;
@@ -779,6 +864,11 @@ el("importFile").addEventListener("change", async (event) => {
 });
 
 ui.filterBox.addEventListener("input", render);
+
+document.querySelector(".vtable thead").addEventListener("click", (event) => {
+  const button = event.target.closest(".sort");
+  if (button) applySort(button.dataset.sort);
+});
 
 ui.checkAll.addEventListener("change", () => {
   const visible = filteredItems();

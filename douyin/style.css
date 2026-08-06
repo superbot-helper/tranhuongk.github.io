@@ -264,6 +264,34 @@ input[readonly] { color: var(--fg-dim); }
   padding: 9px 10px;
   border-bottom: 1px solid var(--bd);
 }
+
+/* ── nút sort trên header ── */
+.vtable thead th:has(.sort) { padding: 0; }
+.sort {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  padding: 9px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.c-num .sort, .c-dur .sort { justify-content: flex-end; }
+.sort:hover { color: var(--accent); }
+/* Mũi tên mờ khi chưa sắp xếp theo cột này, để biết là bấm được */
+.sort::after {
+  content: "↕";
+  font-size: 10px;
+  opacity: .35;
+}
+.sort.active { color: var(--fg); }
+.sort.active::after { opacity: 1; color: var(--accent); }
+.sort.active[data-dir="asc"]::after { content: "↑"; }
+.sort.active[data-dir="desc"]::after { content: "↓"; }
 .vtable td {
   padding: 8px 10px;
   border-bottom: 1px solid var(--bd-soft);
