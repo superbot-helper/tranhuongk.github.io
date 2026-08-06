@@ -96,6 +96,8 @@ function sanitize(name) {
   return name.replace(/[\\/:*?"<>|\r\n\t]/g, " ").replace(/\s+/g, " ").trim().slice(0, 80) || "video";
 }
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 function status(node, text, kind) {
   node.textContent = text;
   node.className = `status${kind ? ` ${kind}` : ""}`;
@@ -236,11 +238,14 @@ async function startScan() {
   let total = 0;
   let page = 0;
   let limited = false;
+  const mixes = new Map();
   try {
     status(ui.scanStatus, "Đang đọc thông tin kênh…", "run");
     let owner = "";
+    let expected = 0;
     try {
       const info = await callApi({ action: "userinfo", url: input });
+      expected = Number(info.user?.awemeCount) || 0;
       owner = info.user?.nickname ? `${info.user.nickname} (${info.user.awemeCount ?? "?"} video)` : "";
     } catch {
       // Không lấy được profile thì vẫn quét bình thường, chỉ mất phần hiển thị.
@@ -259,23 +264,66 @@ async function startScan() {
       page++;
       cursor = payload.cursor;
       limited = Boolean(payload.limited);
+      for (const mix of payload.mixes || []) if (!mixes.has(mix.mixId)) mixes.set(mix.mixId, mix);
       if (limited || !payload.hasMore || !payload.items?.length || !cursor) break;
       if (added === 0 && page > 1) break; // cursor lặp → dừng để không loop vô hạn
     }
 
-    const summary = `Xong: ${items.length} video trong danh sách${owner ? ` — ${owner}` : ""}.`;
+    // `aweme/post` chặn khách vãng lai ở ~42 video, nhưng tuyển tập thì phân
+    // trang bình thường — vét nốt bên đó để bù phần bị cắt.
+    if (limited && mixes.size && items.length < limit) {
+      await scanMixes([...mixes.values()], limit, owner);
+    }
+
+    // Kênh khai `awemeCount` gồm cả video đã ẩn, nên thiếu vài cái là bình
+    // thường — chỉ nói ra để người dùng biết mình đang cầm bao nhiêu phần.
+    const short = expected > 0 && items.length < expected;
     status(
       ui.scanStatus,
-      limited
-        ? `${summary} Douyin dừng ở đây vì request chưa đăng nhập — dán cookie để quét tiếp.`
-        : summary,
-      limited ? "err" : "ok",
+      short
+        ? `Xong: ${items.length}/${expected} video${owner ? ` — ${owner}` : ""}. ` +
+          `Phần còn lại Douyin chỉ trả khi đã đăng nhập — dán cookie để quét nốt.`
+        : `Xong: ${items.length} video trong danh sách${owner ? ` — ${owner}` : ""}.`,
+      short ? "run" : "ok",
     );
   } catch (err) {
     status(ui.scanStatus, `Lỗi quét: ${err.message}`, "err");
   } finally {
     el("startScan").disabled = false;
   }
+}
+
+/**
+ * Vét từng tuyển tập của kênh. Trả về `true` nếu vẫn còn video Douyin không
+ * chịu trả (tức là danh sách vẫn thiếu).
+ */
+async function scanMixes(list, limit, owner) {
+  let stillLimited = false;
+  for (const mix of list) {
+    let cursor = 0;
+    for (let page = 0; page < 40 && items.length < limit; page++) {
+      status(
+        ui.scanStatus,
+        `Đang vét tuyển tập "${mix.name || mix.mixId}"${mix.total ? ` (${mix.total} tập)` : ""}… ` +
+          `${items.length} video${owner ? ` — ${owner}` : ""}`,
+        "run",
+      );
+      let payload;
+      try {
+        payload = await callApi({ action: "mix", mixId: mix.mixId, cursor });
+      } catch (err) {
+        // Bị chặn giữa chừng thì giữ những gì đã lấy được, đừng vứt cả lượt quét.
+        console.warn("mix scan dừng sớm", mix.mixId, err);
+        return true;
+      }
+      addItems(payload.items || []);
+      cursor = payload.cursor;
+      if (!payload.hasMore || !payload.items?.length) break;
+      if (page === 39) stillLimited = true; // tuyển tập quá dài, dừng cho an toàn
+      await sleep(700); // Douyin trả 403 nếu bắn liên tục không nghỉ
+    }
+  }
+  return stillLimited;
 }
 
 /* ═══════════════════════ nhập / xuất link ═══════════════════════ */
