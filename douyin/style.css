@@ -276,7 +276,7 @@ input[readonly] { color: var(--fg-dim); }
 .c-check, .c-idx { width: 1%; }
 .c-num, .c-dur { text-align: right; }
 .vtable td.num { text-align: right; font-variant-numeric: tabular-nums; }
-.c-name { min-width: 220px; }
+.c-name { min-width: 140px; }
 
 .c-thumb { width: 1%; }
 .vtable td.thumb { padding: 4px 10px; }
@@ -298,7 +298,7 @@ input[readonly] { color: var(--fg-dim); }
 .thumb img[data-broken] { visibility: hidden; }
 .name-cell {
   display: block;
-  max-width: 320px;
+  max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
