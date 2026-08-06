@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Douyin Cookie Bridge",
+  "version": "1.0.0",
+  "description": "Đưa cookie douyin.com của chính bạn sang tool Douyin Downloader, để quét được quá 42 video mỗi kênh.",
+  "permissions": ["cookies"],
+  "host_permissions": ["https://*.douyin.com/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://tranhuongk.github.io/douyin/*",
+        "http://localhost/*",
+        "http://127.0.0.1/*"
+      ],
+      "js": ["bridge.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

@@ -224,6 +224,56 @@ function addItems(list) {
   return added;
 }
 
+/* ═══════════════════════ cookie qua extension ═══════════════════════ */
+
+/** Extension đặt cờ này lên <html> ngay khi trang bắt đầu load. */
+const hasCookieBridge = () => document.documentElement.hasAttribute("data-douyin-cookie-bridge");
+
+/** Hỏi extension lấy cookie douyin.com hiện tại của trình duyệt. */
+function requestCookieFromExtension(timeoutMs = 5000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      window.removeEventListener("message", onMessage);
+      reject(new Error("Extension không trả lời — thử tải lại trang."));
+    }, timeoutMs);
+
+    function onMessage(event) {
+      if (event.source !== window || event.data?.type !== "DOUYIN_COOKIE_RESULT") return;
+      clearTimeout(timer);
+      window.removeEventListener("message", onMessage);
+      if (event.data.error) reject(new Error(event.data.error));
+      else resolve(event.data);
+    }
+
+    window.addEventListener("message", onMessage);
+    window.postMessage({ type: "DOUYIN_COOKIE_REQUEST" }, window.location.origin);
+  });
+}
+
+async function grabCookie() {
+  const button = el("grabCookie");
+  button.disabled = true;
+  status(ui.scanStatus, "Đang lấy cookie từ trình duyệt…", "run");
+  try {
+    const result = await requestCookieFromExtension();
+    if (!result.cookie) throw new Error("Trình duyệt chưa có cookie douyin.com nào.");
+    el("cookie").value = result.cookie;
+    savePrefs();
+    status(
+      ui.scanStatus,
+      result.loggedIn
+        ? `Đã lấy cookie (${result.count} mục) — đang đăng nhập, quét được đầy đủ.`
+        : `Đã lấy cookie (${result.count} mục) nhưng chưa thấy phiên đăng nhập — ` +
+          `đăng nhập douyin.com rồi bấm lại thì mới quét quá 42 video.`,
+      result.loggedIn ? "ok" : "err",
+    );
+  } catch (err) {
+    status(ui.scanStatus, `Không lấy được cookie: ${err.message}`, "err");
+  } finally {
+    button.disabled = false;
+  }
+}
+
 /* ═══════════════════════ quét user ═══════════════════════ */
 
 async function startScan() {
@@ -571,6 +621,14 @@ function syncFilterVisibility() {
     ? "Lưu trực tiếp vào thư mục: stream từng chunk ra file, không ngốn RAM."
     : "Trình duyệt này không có File System Access API — chỉ tải về thư mục Downloads (dùng Chrome/Edge để chọn thư mục).";
 }
+
+el("grabCookie").hidden = !hasCookieBridge();
+el("grabCookie").addEventListener("click", grabCookie);
+el("clearCookie").addEventListener("click", () => {
+  el("cookie").value = "";
+  savePrefs();
+  status(ui.scanStatus, "Đã xoá cookie khỏi trình duyệt này.", "ok");
+});
 
 el("startScan").addEventListener("click", startScan);
 el("startDownload").addEventListener("click", startDownload);

@@ -102,9 +102,14 @@
           <label class="lbl" for="cookie">Cookie Douyin (tuỳ chọn — để quét quá 42 video)</label>
           <textarea id="cookie" rows="2" spellcheck="false"
             placeholder="Dán cookie của douyin.com khi đã đăng nhập; bỏ trống vẫn quét được ~42 video mới nhất"></textarea>
+          <div class="row gap">
+            <button class="btn sm" id="grabCookie" hidden>Lấy cookie tự động</button>
+            <button class="btn sm" id="clearCookie">Xoá cookie</button>
+          </div>
           <p class="hint">
             Cookie chỉ lưu trong trình duyệt này và gửi kèm từng request để Douyin mở phân trang —
-            server không lưu lại.
+            server không lưu lại. Nút <b>Lấy cookie tự động</b> chỉ hiện khi đã cài
+            <code>douyin/extension</code> (xem README trong thư mục đó).
           </p>
         </div>
       </details>
