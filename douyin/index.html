@@ -89,35 +89,28 @@
 
           <label class="lbl" for="scanMax">Quét tối đa</label>
           <input type="number" id="scanMax" min="1" max="2000" value="200">
-          <p class="hint">Douyin trả ~18–20 video mỗi trang; tool tự lật trang tới khi đủ số này hoặc hết video.</p>
+          <p class="hint">Tool ký <code>a_bogus</code> phía server nên quét chạy thẳng, không cần mở Douyin.</p>
 
           <button class="btn primary block" id="startScan">▶ Bắt đầu quét</button>
           <p class="status" id="scanStatus"></p>
           <p class="hint">
-            Douyin chặn API danh sách video bằng risk control (<code>shark_fail</code>) nếu request
-            không có signature — nút này chỉ chạy được khi Douyin nới chặn. Cách chắc chắn:
-            dùng <b>Quét bằng trình duyệt</b> bên dưới.
+            Khách vãng lai chỉ được Douyin trả <b>~42 video mới nhất</b> mỗi kênh. Muốn lấy sâu hơn thì
+            dán cookie đăng nhập ở ô bên dưới.
+          </p>
+
+          <label class="lbl" for="cookie">Cookie Douyin (tuỳ chọn — để quét quá 42 video)</label>
+          <textarea id="cookie" rows="2" spellcheck="false"
+            placeholder="Dán cookie của douyin.com khi đã đăng nhập; bỏ trống vẫn quét được ~42 video mới nhất"></textarea>
+          <p class="hint">
+            Cookie chỉ lưu trong trình duyệt này và gửi kèm từng request để Douyin mở phân trang —
+            server không lưu lại.
           </p>
         </div>
       </details>
 
       <details class="card" id="importCard">
-        <summary><span>Nhập link / Quét bằng trình duyệt</span></summary>
+        <summary><span>Nhập link thủ công</span></summary>
         <div class="card-body">
-          <ol class="steps">
-            <li>Mở trang profile trong tab khác: <code>douyin.com/user/&lt;sec_uid&gt;</code></li>
-            <li>F12 → tab Console → dán snippet dưới đây → Enter.</li>
-            <li>Nó lật hết trang API rồi <b>tự mở lại tool này kèm sẵn toàn bộ video</b> — không cần dán tay.</li>
-          </ol>
-          <p class="hint">
-            Snippet gọi thẳng API <code>aweme/post</code> và ký bằng chính hàm
-            <code>byted_acrawler.frontierSign</code> của Douyin (<code>X-Bogus</code>), lật trang qua
-            <code>max_cursor</code> tới hết — nên không cần tự implement signature. Nếu Douyin bỏ hàm đó,
-            snippet tự lùi về cách cuộn + đọc response. Link cũng được copy vào clipboard để dự phòng.
-          </p>
-          <textarea id="snippetBox" rows="6" readonly spellcheck="false"></textarea>
-          <button class="btn sm" id="copySnippet">Copy snippet</button>
-
           <label class="lbl" for="linkInput">Link video — dán gì cũng được, box tự tách thành link sạch</label>
           <textarea id="linkInput" rows="5" spellcheck="false"
             placeholder="Dán cả đoạn share của app, hoặc nhiều link, hoặc CSV đã xuất…"></textarea>

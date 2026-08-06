@@ -3,7 +3,7 @@
 // Mọi request Douyin đi qua edge function này (resolve / user / download).
 const DEFAULT_ENDPOINT = "https://lnazpyhoojqotnanrvqf.supabase.co/functions/v1/douyin";
 const LS_KEY = "douyin_dl_prefs_v1";
-const PAGE_SIZE = 20; // Douyin trả ~18-20 item/trang
+const PAGE_SIZE = 50; // Douyin trần ~42 item cho request không đăng nhập
 
 /** @type {Array<Object>} state chính — 1 phần tử = 1 video */
 let items = [];
@@ -39,9 +39,9 @@ function loadPrefs() {
   } catch {
     prefs = {};
   }
-  el("snippetBox").value = HARVEST_SNIPPET;
   el("endpoint").value = prefs.endpoint || DEFAULT_ENDPOINT;
   el("profileUrl").value = prefs.profileUrl || "";
+  el("cookie").value = prefs.cookie || "";
   el("scanMax").value = prefs.scanMax || 200;
   el("threads").value = prefs.threads || 4;
   el("naming").value = prefs.naming || "title";
@@ -57,6 +57,7 @@ function savePrefs() {
   const prefs = {
     endpoint: el("endpoint").value.trim(),
     profileUrl: el("profileUrl").value.trim(),
+    cookie: el("cookie").value.trim(),
     scanMax: Number(el("scanMax").value),
     threads: Number(el("threads").value),
     naming: el("naming").value,
@@ -100,10 +101,19 @@ function status(node, text, kind) {
   node.className = `status${kind ? ` ${kind}` : ""}`;
 }
 
+/**
+ * Cookie đăng nhập đi trong body (POST) chứ không phải query string, để nó
+ * không nằm lại trong access log của edge function.
+ */
 async function callApi(params, signal) {
+  const cookie = el("cookie").value.trim();
   const url = new URL(endpoint());
   for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
-  const response = await fetch(url, { signal });
+
+  const init = cookie
+    ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cookie }), signal }
+    : { signal };
+  const response = await fetch(url, init);
   const payload = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
   if (!response.ok || payload.error) {
     const error = new Error(payload.error || `HTTP ${response.status}`);
@@ -225,9 +235,19 @@ async function startScan() {
   let cursor = 0;
   let total = 0;
   let page = 0;
+  let limited = false;
   try {
+    status(ui.scanStatus, "Đang đọc thông tin kênh…", "run");
+    let owner = "";
+    try {
+      const info = await callApi({ action: "userinfo", url: input });
+      owner = info.user?.nickname ? `${info.user.nickname} (${info.user.awemeCount ?? "?"} video)` : "";
+    } catch {
+      // Không lấy được profile thì vẫn quét bình thường, chỉ mất phần hiển thị.
+    }
+
     while (total < limit) {
-      status(ui.scanStatus, `Đang quét trang ${page + 1}… (${total} video)`, "run");
+      status(ui.scanStatus, `Đang quét ${owner}… (${total} video)`, "run");
       const payload = await callApi({
         action: "user",
         url: input,
@@ -238,10 +258,19 @@ async function startScan() {
       total += payload.items?.length || 0;
       page++;
       cursor = payload.cursor;
-      if (!payload.hasMore || !payload.items?.length || !cursor) break;
+      limited = Boolean(payload.limited);
+      if (limited || !payload.hasMore || !payload.items?.length || !cursor) break;
       if (added === 0 && page > 1) break; // cursor lặp → dừng để không loop vô hạn
     }
-    status(ui.scanStatus, `Xong: ${items.length} video trong danh sách (quét ${page} trang).`, "ok");
+
+    const summary = `Xong: ${items.length} video trong danh sách${owner ? ` — ${owner}` : ""}.`;
+    status(
+      ui.scanStatus,
+      limited
+        ? `${summary} Douyin dừng ở đây vì request chưa đăng nhập — dán cookie để quét tiếp.`
+        : summary,
+      limited ? "err" : "ok",
+    );
   } catch (err) {
     status(ui.scanStatus, `Lỗi quét: ${err.message}`, "err");
   } finally {
@@ -280,14 +309,10 @@ async function resolveLinks(links) {
   }));
 
   if (profiles.size) {
+    // Link share profile chứ không phải share video — quét thẳng luôn cho gọn.
     el("profileUrl").value = [...profiles].join("\n");
     savePrefs();
-    status(
-      ui.scanStatus,
-      `${profiles.size} link là share profile (không phải share video) — đã điền sec_uid vào ô Người dùng. ` +
-        `Danh sách video của user cần snippet "Quét bằng trình duyệt".`,
-      "err",
-    );
+    await startScan();
     return;
   }
 
@@ -508,87 +533,13 @@ el("useFilter").addEventListener("change", () => {
   syncFilterVisibility();
   savePrefs();
 });
-for (const id of ["threads", "naming", "scanMax", "minLike", "minPlay", "profileUrl"]) {
+for (const id of ["threads", "naming", "scanMax", "minLike", "minPlay", "profileUrl", "cookie"]) {
   el(id).addEventListener("change", savePrefs);
 }
 for (const radio of document.querySelectorAll('input[name="dest"]')) {
   radio.addEventListener("change", savePrefs);
 }
 
-const TOOL_URL = `${globalThis.location?.origin ?? "https://tranhuongk.github.io"}${
-  globalThis.location?.pathname ?? "/douyin/"
-}`;
-
-/**
- * Chạy trong tab profile Douyin (douyin.com/user/...). Gọi thẳng API
- * `aweme/post` và ký bằng chính `byted_acrawler.frontierSign` của Douyin
- * (X-Bogus) — lấy đủ danh sách qua max_cursor, không cần cuộn tay, không cần
- * tự implement signature. Nếu Douyin bỏ frontierSign thì fallback sang cuộn +
- * hook fetch/XHR để đọc response họ tự ký.
- */
-const HARVEST_SNIPPET = `(async () => {
-  const TOOL = '${TOOL_URL}';
-  const sec = (location.pathname.match(/\\/user\\/([^/?#]+)/) || [])[1];
-  if (!sec) return 'Hãy mở trang profile douyin.com/user/... rồi chạy lại';
-  const finish = async (ids, how) => {
-    const uniq = [...new Set(ids)];
-    try { await navigator.clipboard.writeText(uniq.map(i => 'https://www.douyin.com/video/' + i).join('\\n')); } catch {}
-    const link = TOOL + '#import=' + uniq.slice(0, 800).join(',');
-    const tab = open(link, '_blank');
-    if (!tab) console.log('Popup bị chặn — mở link này:', link);
-    return uniq.length + ' video (' + how + ')' + (tab ? ' — đã mở tool kèm danh sách' : ' — link đã copy + in ở trên');
-  };
-  try {
-    const base = { device_platform: 'webapp', aid: '6383', channel: 'channel_pc_web', sec_user_id: sec,
-      locate_query: 'false', show_live_replay_strategy: '1', count: '18', publish_video_strategy_type: '2',
-      pc_client_type: '1', version_code: '190500', version_name: '19.5.0', cookie_enabled: 'true', platform: 'PC',
-      browser_language: 'zh-CN', browser_platform: 'Win32', browser_name: 'Chrome', browser_version: '131.0.0.0',
-      engine_name: 'Blink', os_name: 'Windows', os_version: '10' };
-    const ids = [];
-    let cursor = 0, more = 1, page = 0;
-    while (more && page++ < 200) {
-      const u = new URL('https://www.douyin.com/aweme/v1/web/aweme/post/');
-      Object.entries({ ...base, max_cursor: String(cursor) }).forEach(([k, v]) => u.searchParams.set(k, v));
-      const sig = byted_acrawler.frontierSign({ url: u.toString() });
-      const j = await (await fetch(u.toString() + '&X-Bogus=' + encodeURIComponent(sig['X-Bogus']), { credentials: 'include' })).json();
-      const list = j.aweme_list || [];
-      list.forEach(a => a && a.aweme_id && ids.push(a.aweme_id));
-      console.log('trang', page, '→', ids.length, 'video');
-      more = j.has_more; cursor = j.max_cursor;
-      if (!list.length) break;
-      await new Promise(r => setTimeout(r, 400));
-    }
-    if (ids.length) return await finish(ids, 'API');
-    throw new Error('API không trả video');
-  } catch (e) {
-    console.warn('API path lỗi, chuyển sang cuộn:', e);
-    const ids = new Set();
-    const eat = j => (j && Array.isArray(j.aweme_list) ? j.aweme_list : []).forEach(a => a && a.aweme_id && ids.add(a.aweme_id));
-    const isPost = u => /aweme\\/post/.test(u || '');
-    const of = window.fetch;
-    window.fetch = async (...a) => {
-      const r = await of(...a);
-      const u = typeof a[0] === 'string' ? a[0] : (a[0] && a[0].url) || '';
-      if (isPost(u)) r.clone().json().then(eat).catch(() => {});
-      return r;
-    };
-    const pick = () => [document.scrollingElement, ...document.querySelectorAll('div')]
-      .filter(el => el && el.scrollHeight > el.clientHeight + 80 && /auto|scroll/.test(getComputedStyle(el).overflowY))
-      .sort((a, b) => b.scrollHeight - a.scrollHeight)[0] || document.scrollingElement;
-    const hrefs = () => document.querySelectorAll('a[href*="/video/"]').forEach(a => {
-      const m = a.href.match(/\\/video\\/(\\d{15,25})/); if (m) ids.add(m[1]);
-    });
-    let last = 0, stale = 0;
-    while (stale < 6) {
-      hrefs();
-      if (ids.size === last) stale++; else { stale = 0; last = ids.size; }
-      const s = pick(); s.scrollTop = s.scrollHeight;
-      console.log('đã thấy', ids.size, 'video');
-      await new Promise(r => setTimeout(r, 1200));
-    }
-    return await finish([...ids], 'cuộn');
-  }
-})()`;
 
 /** Bookmarklet mở tool kèm ID (#import=...) — tự resolve metadata ngay khi load. */
 async function importFromHash() {
@@ -686,15 +637,6 @@ el("linkInput").addEventListener("blur", normalizeLinkBox);
 el("profileUrl").addEventListener("paste", () => setTimeout(normalizeProfileBox, 0));
 el("profileUrl").addEventListener("blur", normalizeProfileBox);
 
-el("copySnippet").addEventListener("click", async () => {
-  try {
-    await navigator.clipboard.writeText(HARVEST_SNIPPET);
-    status(ui.scanStatus, "Đã copy snippet — dán vào Console của tab profile Douyin.", "ok");
-  } catch {
-    el("snippetBox").select();
-    status(ui.scanStatus, "Không copy tự động được — snippet đã được chọn, bấm Ctrl+C.", "err");
-  }
-});
 
 el("importFileBtn").addEventListener("click", () => el("importFile").click());
 el("importFile").addEventListener("change", async (event) => {
