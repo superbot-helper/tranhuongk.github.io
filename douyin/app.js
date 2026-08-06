@@ -47,7 +47,6 @@ function loadPrefs() {
   el("naming").value = prefs.naming || "title";
   el("useFilter").checked = Boolean(prefs.useFilter);
   el("minLike").value = prefs.minLike || 0;
-  el("minPlay").value = prefs.minPlay || 0;
   const dest = prefs.dest === "folder" ? "folder" : "browser";
   document.querySelector(`input[name="dest"][value="${dest}"]`).checked = true;
   syncFilterVisibility();
@@ -63,7 +62,6 @@ function savePrefs() {
     naming: el("naming").value,
     useFilter: el("useFilter").checked,
     minLike: Number(el("minLike").value),
-    minPlay: Number(el("minPlay").value),
     dest: destValue(),
   };
   localStorage.setItem(LS_KEY, JSON.stringify(prefs));
@@ -154,11 +152,11 @@ function render() {
     tr.innerHTML = `
       <td><input type="checkbox" data-id="${item.awemeId}" ${item.selected ? "checked" : ""}></td>
       <td class="num">${index}</td>
+      <td class="thumb">${thumbCell(item)}</td>
       <td><span class="name-cell" title="${escapeHtml(item.desc || item.title)}">${escapeHtml(item.title)}</span></td>
       <td><a class="url-cell" href="${item.shareUrl}" target="_blank" rel="noopener">${item.shareUrl.replace("https://www.", "")}</a></td>
       <td class="num">${num(item.stats?.comment)}</td>
       <td class="num">${num(item.stats?.like)}</td>
-      <td class="num">${num(item.stats?.play)}</td>
       <td class="num">${num(item.stats?.share)}</td>
       <td>douyin</td>
       <td class="num">${duration(item.duration)}</td>
@@ -169,7 +167,32 @@ function render() {
 
   ui.empty.hidden = visible.length > 0;
   ui.rowsInfo.textContent = `Hiển thị ${visible.length} / ${items.length} dữ liệu`;
+  watchThumbs();
   updateStats();
+}
+
+/** Ảnh cover load thẳng từ CDN Douyin — CDN này không chặn hotlink. */
+function thumbCell(item) {
+  if (!item.cover) return "";
+  return `<a href="${item.shareUrl}" target="_blank" rel="noopener" title="Mở video trên Douyin">` +
+    `<img data-src="${escapeHtml(item.cover)}" alt="" decoding="async" ` +
+    `onerror="this.dataset.broken=1"></a>`;
+}
+
+// `loading="lazy"` không chịu kích hoạt cho ảnh nằm trong khung cuộn riêng của
+// bảng, nên tự quan sát: chỉ nạp ảnh khi dòng thật sự lọt vào khung đó.
+const thumbObserver = new IntersectionObserver((entries, observer) => {
+  for (const entry of entries) {
+    if (!entry.isIntersecting) continue;
+    const img = entry.target;
+    img.src = img.dataset.src;
+    delete img.dataset.src;
+    observer.unobserve(img);
+  }
+}, { root: document.querySelector(".table-scroll"), rootMargin: "300px" });
+
+function watchThumbs() {
+  for (const img of ui.body.querySelectorAll("img[data-src]")) thumbObserver.observe(img);
 }
 
 function stateLabel(item) {
@@ -429,16 +452,16 @@ function exportLinks() {
   const source = chosen.length ? chosen : items;
   if (!source.length) return status(ui.scanStatus, "Danh sách trống, không có gì để xuất.", "err");
 
-  const lines = ["url,title,likes,comments,plays,shares,aweme_id"];
+  const lines = ["url,title,likes,comments,shares,aweme_id,cover"];
   for (const item of source) {
     lines.push([
       item.shareUrl,
       `"${(item.title || "").replace(/"/g, "'")}"`,
       item.stats?.like ?? "",
       item.stats?.comment ?? "",
-      item.stats?.play ?? "",
       item.stats?.share ?? "",
       item.awemeId,
+      item.cover ?? "",
     ].join(","));
   }
   const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
@@ -456,8 +479,8 @@ function exportLinks() {
 function passesFilter(item) {
   if (!el("useFilter").checked) return true;
   const minLike = Number(el("minLike").value) || 0;
-  const minPlay = Number(el("minPlay").value) || 0;
-  return (item.stats?.like ?? 0) >= minLike && (item.stats?.play ?? 0) >= minPlay;
+  // Không lọc theo lượt phát: Douyin không trả số đó qua web, luôn là 0.
+  return (item.stats?.like ?? 0) >= minLike;
 }
 
 function fileName(item, index) {
@@ -642,7 +665,7 @@ el("useFilter").addEventListener("change", () => {
   syncFilterVisibility();
   savePrefs();
 });
-for (const id of ["threads", "naming", "scanMax", "minLike", "minPlay", "profileUrl", "cookie"]) {
+for (const id of ["threads", "naming", "scanMax", "minLike", "profileUrl", "cookie"]) {
   el(id).addEventListener("change", savePrefs);
 }
 for (const radio of document.querySelectorAll('input[name="dest"]')) {

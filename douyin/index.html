@@ -6,7 +6,7 @@
 <title>Douyin Downloader — quét & tải video</title>
 <link rel="icon" href="../avt_x.png">
 <!-- Bump ?v= mỗi lần sửa asset để tránh browser/CDN trả bản cache cũ -->
-<link rel="stylesheet" href="style.css?v=4">
+<link rel="stylesheet" href="style.css?v=5">
 </head>
 <body>
 <div class="wrap">
@@ -45,11 +45,11 @@
             <tr>
               <th class="c-check"><input type="checkbox" id="checkAll" title="Chọn tất cả"></th>
               <th class="c-idx">STT</th>
+              <th class="c-thumb">Ảnh</th>
               <th class="c-name">Tên video</th>
               <th class="c-url">URL Video</th>
               <th class="c-num">Bình luận</th>
               <th class="c-num">Lượt thích</th>
-              <th class="c-num">Lượt phát</th>
               <th class="c-num">Lượt chia sẻ</th>
               <th class="c-plat">Nền tảng</th>
               <th class="c-dur">Thời lượng</th>
@@ -150,8 +150,6 @@
           <div class="filter-grid" id="filterGrid" hidden>
             <label class="lbl sm" for="minLike">Lượt thích ≥</label>
             <input type="number" id="minLike" min="0" value="0">
-            <label class="lbl sm" for="minPlay">Lượt phát ≥</label>
-            <input type="number" id="minPlay" min="0" value="0">
           </div>
 
           <label class="lbl">Nơi lưu file</label>
@@ -204,6 +202,6 @@
 </div>
 
 <input type="file" id="importFile" accept=".txt,.csv" hidden>
-<script src="app.js?v=4"></script>
+<script src="app.js?v=5"></script>
 </body>
 </html>

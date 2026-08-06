@@ -277,6 +277,25 @@ input[readonly] { color: var(--fg-dim); }
 .c-num, .c-dur { text-align: right; }
 .vtable td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .c-name { min-width: 220px; }
+
+.c-thumb { width: 1%; }
+.vtable td.thumb { padding: 4px 10px; }
+.thumb a {
+  display: block;
+  width: 46px;
+  height: 62px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--bg-row);
+}
+.thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+/* Ảnh hỏng thì để khung trống thay vì icon vỡ của trình duyệt. */
+.thumb img[data-broken] { visibility: hidden; }
 .name-cell {
   display: block;
   max-width: 320px;
