@@ -325,17 +325,20 @@ async function startScan() {
       await scanMixes([...mixes.values()], limit, owner);
     }
 
-    // Kênh khai `awemeCount` gồm cả video đã ẩn, nên thiếu vài cái là bình
-    // thường — chỉ nói ra để người dùng biết mình đang cầm bao nhiêu phần.
-    const short = expected > 0 && items.length < expected;
-    status(
-      ui.scanStatus,
-      short
-        ? `Xong: ${items.length}/${expected} video${owner ? ` — ${owner}` : ""}. ` +
-          `Phần còn lại Douyin chỉ trả khi đã đăng nhập — dán cookie để quét nốt.`
-        : `Xong: ${items.length} video trong danh sách${owner ? ` — ${owner}` : ""}.`,
-      short ? "run" : "ok",
-    );
+    // Thiếu so với số kênh khai thì nguyên nhân khác hẳn nhau: chưa có cookie
+    // là do Douyin cắt bớt, còn đã có cookie thì phần chênh gần như luôn là
+    // video đã ẩn hoặc xoá — `awemeCount` vẫn đếm chúng.
+    const shortfall = expected > 0 && items.length < expected;
+    const hasCookie = Boolean(el("cookie").value.trim());
+    let message = `Xong: ${items.length} video trong danh sách${owner ? ` — ${owner}` : ""}.`;
+    if (shortfall && !hasCookie) {
+      message = `Xong: ${items.length}/${expected} video${owner ? ` — ${owner}` : ""}. ` +
+        `Douyin chỉ trả chừng này cho khách vãng lai — dùng cookie để lấy nốt.`;
+    } else if (shortfall) {
+      message = `Xong: ${items.length}/${expected} video${owner ? ` — ${owner}` : ""} ` +
+        `(phần chênh thường là video đã ẩn hoặc xoá).`;
+    }
+    status(ui.scanStatus, message, shortfall && !hasCookie ? "run" : "ok");
   } catch (err) {
     status(ui.scanStatus, `Lỗi quét: ${err.message}`, "err");
   } finally {
