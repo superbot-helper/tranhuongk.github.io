@@ -6,7 +6,7 @@
 <title>Douyin Downloader — quét & tải video</title>
 <link rel="icon" href="../avt_x.png">
 <!-- Bump ?v= mỗi lần sửa asset để tránh browser/CDN trả bản cache cũ -->
-<link rel="stylesheet" href="style.css?v=26">
+<link rel="stylesheet" href="style.css?v=28">
 </head>
 <body>
 <div class="wrap">
@@ -46,15 +46,15 @@
               <th class="c-num"><button class="sort" data-sort="comment">Bình luận</button></th>
               <th class="c-num"><button class="sort" data-sort="like">Lượt thích</button></th>
               <th class="c-num"><button class="sort" data-sort="share">Lượt chia sẻ</button></th>
-              <th class="c-plat">Nền tảng</th>
               <th class="c-dur"><button class="sort" data-sort="duration">Thời lượng</button></th>
+              <th class="c-date"><button class="sort" data-sort="date">Ngày đăng</button></th>
               <th class="c-state"><button class="sort" data-sort="state">Trạng thái</button></th>
               <th class="c-dl"></th>
             </tr>
           </thead>
           <tbody id="videoBody"></tbody>
         </table>
-        <p class="empty" id="emptyState">Chưa có video. Quét kênh hoặc dán link ở mục <b>Nhập link thủ công</b>.</p>
+        <p class="empty" id="emptyState">Chưa có video. Dán link kênh hoặc link video vào ô <b>Link</b> rồi bấm <b>Bắt đầu quét</b>.</p>
       </div>
 
       <div class="card-foot">
@@ -74,32 +74,30 @@
       <details class="card" id="scanCard" open>
         <summary><span>Cấu hình quét video</span></summary>
         <div class="card-body">
-          <label class="lbl" for="platform">Nền tảng</label>
-          <select id="platform">
-            <option value="douyin">Douyin</option>
-          </select>
-
-          <label class="lbl" for="profileUrl">Người dùng</label>
-          <textarea id="profileUrl" rows="3" spellcheck="false"
-            placeholder="Dán link profile hoặc cả đoạn share của app — box sẽ tự thu lại thành link"></textarea>
+          <label class="lbl" for="links">Link — mỗi dòng một link</label>
+          <textarea id="links" rows="4" spellcheck="false"
+            placeholder="Link kênh hoặc link video, dán cả đoạn share của app cũng được.&#10;Link kênh → lấy cả kênh, link video → thêm đúng video đó."></textarea>
 
           <label class="lbl" for="scanMax">Quét tối đa</label>
           <input type="number" id="scanMax" min="1" max="2000" value="200">
 
-          <label class="switch">
-            <input type="checkbox" id="useFilter">
-            <span>Chỉ lấy video đạt ngưỡng</span>
-          </label>
-          <div class="filter-grid" id="filterGrid" hidden>
-            <label class="lbl sm" for="minLike">Lượt thích ≥</label>
-            <input type="number" id="minLike" min="0" value="0">
+          <!-- Tiêu chí lọc do người dùng tự thêm; app.js dựng từ FILTER_TYPES. -->
+          <div class="filter-head">
+            <span>Chỉ video đạt ngưỡng:</span>
+            <div class="add-wrap">
+              <button class="btn sm" id="addFilter" title="Thêm tiêu chí lọc">+</button>
+              <div class="add-menu" id="filterMenu" hidden></div>
+            </div>
           </div>
+          <div class="filter-list" id="filterList"></div>
+          <p class="filter-empty" id="filterEmpty">Chưa có tiêu chí nào — lấy hết video quét được.</p>
 
           <button class="btn primary block" id="startScan">▶ Bắt đầu quét</button>
+          <button class="btn block" id="importFileBtn">Nạp link từ file .txt/.csv</button>
           <p class="status" id="scanStatus"></p>
           <p class="hint">
-            Không cookie: <b>~42 video mới nhất</b> + phần vét từ tuyển tập. Muốn đủ cả kênh thì
-            thêm cookie ở mục dưới.
+            Link kênh không cookie: <b>~42 video mới nhất</b> + phần vét từ tuyển tập. Muốn đủ
+            cả kênh thì thêm cookie ở mục dưới.
           </p>
         </div>
       </details>
@@ -119,19 +117,6 @@
             server không lưu lại. Nút <b>Lấy cookie tự động</b> chỉ hiện khi đã cài
             <code>douyin/extension</code> (xem README trong thư mục đó).
           </p>
-        </div>
-      </details>
-
-      <details class="card" id="importCard">
-        <summary><span>Nhập link thủ công</span></summary>
-        <div class="card-body">
-          <label class="lbl" for="linkInput">Link video — dán gì cũng được, box tự tách thành link sạch</label>
-          <textarea id="linkInput" rows="5" spellcheck="false"
-            placeholder="Dán cả đoạn share của app, hoặc nhiều link, hoặc CSV đã xuất…"></textarea>
-          <div class="row gap">
-            <button class="btn primary" id="resolvePasted">Lấy metadata</button>
-            <button class="btn" id="importFileBtn">Từ file .txt/.csv</button>
-          </div>
         </div>
       </details>
 
@@ -194,6 +179,6 @@
 </div>
 
 <input type="file" id="importFile" accept=".txt,.csv" hidden>
-<script src="app.js?v=26"></script>
+<script src="app.js?v=28"></script>
 </body>
 </html>

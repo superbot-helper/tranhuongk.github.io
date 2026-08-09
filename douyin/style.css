@@ -154,7 +154,7 @@ details.card > summary:hover { color: var(--accent); }
 .lbl.sm { margin: 0; align-self: center; }
 .card-body > .lbl:first-child { margin-top: 0; }
 
-input[type="text"], input[type="number"], input[type="search"], select, textarea {
+input[type="text"], input[type="number"], input[type="search"], input[type="date"], select, textarea {
   width: 100%;
   background: var(--bg-input);
   color: var(--fg);
@@ -187,16 +187,68 @@ input[readonly] { color: var(--fg-dim); }
 }
 .switch input, .radio input { accent-color: var(--accent); width: 15px; height: 15px; }
 
-.filter-grid {
-  display: grid;
-  grid-template-columns: auto 1fr;
+/* ── bộ lọc động: nhãn + nút thêm, rồi từng dòng tiêu chí ── */
+.filter-head {
+  display: flex;
+  align-items: center;
   gap: 8px;
-  margin-top: 10px;
-  padding: 10px;
+  margin-top: 14px;
+  font-size: 13.5px;
+}
+.add-wrap { position: relative; margin-left: auto; }
+.add-wrap .btn { font-size: 16px; line-height: 1; padding: 4px 12px; }
+.add-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 5;
+  min-width: 170px;
+  padding: 4px;
+  background: var(--bg-card);
+  border: 1px solid var(--bd);
+  border-radius: 8px;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, .5);
+}
+.add-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+.add-menu button:hover { background: var(--bg-input); color: var(--accent); }
+
+.filter-list { margin-top: 8px; display: grid; gap: 8px; }
+.filter-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
   background: var(--bg-input);
   border: 1px solid var(--bd-soft);
   border-radius: 8px;
 }
+.filter-row .lbl { margin: 0; white-space: nowrap; }
+.filter-row input { background: var(--bg-card); }
+.rm {
+  background: none;
+  border: 0;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  padding: 6px;
+  cursor: pointer;
+}
+.rm:hover { color: var(--bad); }
+.filter-empty { margin: 8px 0 0; font-size: 12px; color: var(--fg-dim); }
 
 .steps {
   margin: 0 0 10px;
@@ -304,7 +356,7 @@ input[readonly] { color: var(--fg-dim); }
 .vtable tbody tr.checked { background: rgba(45, 212, 191, .06); }
 .vtable input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px; }
 
-.c-check, .c-idx { width: 1%; }
+.c-check, .c-idx, .c-date { width: 1%; }
 .c-num, .c-dur { text-align: right; }
 .vtable td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .c-name { min-width: 140px; }
@@ -396,7 +448,7 @@ input[readonly] { color: var(--fg-dim); }
   .btn.ghost { min-width: 44px; }
   .sort { min-height: 44px; }
   input[type="text"], input[type="number"], input[type="search"],
-  input[type="password"], select { min-height: 44px; }
+  input[type="date"], input[type="password"], select { min-height: 44px; }
   .vtable input[type="checkbox"], .switch input, .radio input { width: 22px; height: 22px; }
 }
 
@@ -477,10 +529,9 @@ input[readonly] { color: var(--fg-dim); }
   .vtable td.thumb { position: absolute; top: 10px; left: 10px; padding: 0; }
   .thumb a { width: 56px; height: 76px; }
 
-  /* STT / URL / nền tảng: thừa khi mỗi thẻ đã là một video và ảnh dẫn tới nó. */
+  /* STT và URL: thừa khi mỗi thẻ đã là một video và ảnh dẫn tới nó. */
   .vtable td[data-label="STT"],
-  .vtable td[data-label="URL Video"],
-  .vtable td[data-label="Nền tảng"] { display: none; }
+  .vtable td[data-label="URL Video"] { display: none; }
 
   .name-cell {
     max-width: none;
@@ -498,6 +549,7 @@ input[readonly] { color: var(--fg-dim); }
   .vtable td[data-label="Lượt thích"],
   .vtable td[data-label="Lượt chia sẻ"],
   .vtable td[data-label="Thời lượng"],
+  .vtable td[data-label="Ngày đăng"],
   .vtable td[data-label="Trạng thái"] {
     display: inline;
     font-size: 12px;
@@ -507,6 +559,7 @@ input[readonly] { color: var(--fg-dim); }
   .vtable td[data-label="Lượt thích"]::after { content: " thích · "; }
   .vtable td[data-label="Lượt chia sẻ"]::after { content: " chia sẻ · "; }
   .vtable td[data-label="Thời lượng"]::after { content: " · "; }
+  .vtable td[data-label="Ngày đăng"]::after { content: " · "; }
 }
 
 

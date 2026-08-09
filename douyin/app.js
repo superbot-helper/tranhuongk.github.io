@@ -8,6 +8,26 @@ const PAGE_SIZE = 50; // Douyin trần ~42 item cho request không đăng nhập
 const TR_BATCH = 200; // trần mỗi lượt gọi action=translate của function
 const TR_CACHE_MAX = 3000;
 
+/**
+ * Các tiêu chí lọc có thể thêm. `pick` lấy số cần so từ item; `kind` quyết định
+ * so sánh ≥ hay ≤. Không có "lượt phát": Douyin không trả số đó qua web.
+ */
+const FILTER_TYPES = [
+  { key: "minLike", label: "Lượt thích ≥", kind: "min", hint: "vd 1000", pick: (i) => i.stats?.like ?? 0 },
+  { key: "minComment", label: "Bình luận ≥", kind: "min", hint: "vd 50", pick: (i) => i.stats?.comment ?? 0 },
+  { key: "minShare", label: "Lượt chia sẻ ≥", kind: "min", hint: "vd 100", pick: (i) => i.stats?.share ?? 0 },
+  { key: "minCollect", label: "Lượt lưu ≥", kind: "min", hint: "vd 100", pick: (i) => i.stats?.collect ?? 0 },
+  { key: "minDuration", label: "Thời lượng ≥", kind: "min", hint: "giây", pick: (i) => (i.duration ?? 0) / 1000 },
+  { key: "maxDuration", label: "Thời lượng ≤", kind: "max", hint: "giây", pick: (i) => (i.duration ?? 0) / 1000 },
+  { key: "fromDate", label: "Đăng từ ngày", kind: "min", type: "date", pick: (i) => i.createTime },
+  { key: "toDate", label: "Đăng đến ngày", kind: "max", type: "date", pick: (i) => i.createTime },
+];
+
+const filterType = (key) => FILTER_TYPES.find((entry) => entry.key === key);
+
+/** @type {Array<{key: string, value: string}>} tiêu chí đang bật, theo thứ tự thêm */
+let activeFilters = [];
+
 /** @type {Array<Object>} state chính — 1 phần tử = 1 video */
 let items = [];
 let dirHandle = null;
@@ -41,13 +61,16 @@ function loadPrefs() {
   } catch {
     prefs = {};
   }
-  el("profileUrl").value = prefs.profileUrl || "";
+  el("links").value = prefs.links ?? prefs.profileUrl ?? "";
   el("cookie").value = prefs.cookie || "";
   el("scanMax").value = prefs.scanMax || 200;
   el("threads").value = prefs.threads || 4;
   el("naming").value = prefs.naming || "title";
-  el("useFilter").checked = Boolean(prefs.useFilter);
-  el("minLike").value = prefs.minLike || 0;
+  // Bỏ qua tiêu chí lạ/trùng: FILTER_TYPES đổi thì prefs cũ vẫn nạp được.
+  const seen = new Set();
+  activeFilters = (Array.isArray(prefs.filters) ? prefs.filters : [])
+    .filter((entry) => filterType(entry?.key) && !seen.has(entry.key) && seen.add(entry.key))
+    .map((entry) => ({ key: entry.key, value: String(entry.value ?? "") }));
   if (prefs.sortKey && SORT_VALUES[prefs.sortKey]) sortKey = prefs.sortKey;
   if (prefs.sortDir === "asc" || prefs.sortDir === "desc") sortDir = prefs.sortDir;
   const dest = prefs.dest === "folder" ? "folder" : "browser";
@@ -57,13 +80,12 @@ function loadPrefs() {
 
 function savePrefs() {
   const prefs = {
-    profileUrl: el("profileUrl").value.trim(),
+    links: el("links").value.trim(),
     cookie: el("cookie").value.trim(),
     scanMax: Number(el("scanMax").value),
     threads: Number(el("threads").value),
     naming: el("naming").value,
-    useFilter: el("useFilter").checked,
-    minLike: Number(el("minLike").value),
+    filters: activeFilters,
     sortKey,
     sortDir,
     dest: destValue(),
@@ -88,6 +110,16 @@ function duration(ms) {
   const m = String(Math.floor(total / 60)).padStart(2, "0");
   const s = String(total % 60).padStart(2, "0");
   return `${m}:${s}`;
+}
+
+/** `create_time` của Douyin là unix giây. */
+function postedDate(seconds) {
+  if (!seconds) return "-";
+  const date = new Date(seconds * 1000);
+  // Ép 2 chữ số để cột ngày thẳng hàng: "02/08/2026" chứ không phải "2/8/2026".
+  return Number.isNaN(date.getTime())
+    ? "-"
+    : date.toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric" });
 }
 
 function bytes(size) {
@@ -249,6 +281,7 @@ const SORT_VALUES = {
   like: (item) => item.stats?.like ?? -1,
   share: (item) => item.stats?.share ?? -1,
   duration: (item) => item.duration ?? -1,
+  date: (item) => item.createTime ?? -1,
   state: (item) => item.state || "wait",
 };
 
@@ -316,8 +349,8 @@ function render() {
       <td class="num" data-label="Bình luận">${num(item.stats?.comment)}</td>
       <td class="num" data-label="Lượt thích">${num(item.stats?.like)}</td>
       <td class="num" data-label="Lượt chia sẻ">${num(item.stats?.share)}</td>
-      <td data-label="Nền tảng">douyin</td>
       <td class="num" data-label="Thời lượng">${duration(item.duration)}</td>
+      <td class="num" data-label="Ngày đăng">${postedDate(item.createTime)}</td>
       <td data-label="Trạng thái"><span class="state ${item.state || "wait"}" title="${escapeHtml(item.error || "")}">${stateLabel(item)}</span></td>
       <td class="row-dl">${rowDownloadLink(item, index)}</td>`;
     fragment.appendChild(tr);
@@ -392,7 +425,9 @@ function refreshRow(item) {
   const box = ui.body.querySelector(`input[data-id="${item.awemeId}"]`);
   const tr = box?.closest("tr");
   if (!tr) return;
-  const cell = tr.lastElementChild.firstElementChild;
+  // Tìm theo class chứ không theo vị trí: ô cuối dòng giờ là nút Tải.
+  const cell = tr.querySelector(".state");
+  if (!cell) return;
   cell.className = `state ${item.state || "wait"}`;
   cell.title = item.error || "";
   cell.textContent = stateLabel(item);
@@ -461,86 +496,164 @@ async function grabCookie() {
   }
 }
 
-/* ═══════════════════════ quét user ═══════════════════════ */
+/* ═══════════════════════ quét ═══════════════════════ */
+
+/**
+ * Link rút gọn (v.douyin.com/xxx) chưa nói được nó dẫn tới đâu — cứ thử resolve
+ * như link video, function sẽ trả `kind: "user"` nếu hoá ra là link kênh.
+ */
+function classifyLink(text) {
+  if (SEC_UID_RE.test(text) || /\/user\//i.test(text)) return "user";
+  return "video";
+}
+
+/**
+ * Lấy metadata cho các link video. Trả về sec_uid của những link hoá ra là
+ * link kênh, để caller quét tiếp bên đó.
+ */
+async function resolveVideoLinks(links, limit) {
+  const threads = Math.max(1, Number(el("threads").value) || 4);
+  const queue = links.slice();
+  const profiles = new Set();
+  let done = 0;
+  let failed = 0;
+
+  await Promise.all(Array.from({ length: Math.min(threads, queue.length) }, async () => {
+    while (queue.length && items.length < limit) {
+      const link = queue.shift();
+      status(ui.scanStatus, `Đang lấy metadata video ${done}/${links.length}…`, "run");
+      try {
+        const payload = await callApi({ action: "resolve", url: link });
+        addItems(withinLimit([payload.item], limit));
+      } catch (err) {
+        if (err.payload?.kind === "user" && err.payload.secUid) profiles.add(err.payload.secUid);
+        else failed++;
+        console.warn("resolve failed", link, err);
+      }
+      done++;
+    }
+  }));
+
+  return { profiles: [...profiles], failed };
+}
+
+/** Quét một kênh (kèm phần vét tuyển tập). */
+async function scanUser(input, limit, label) {
+  let owner = "";
+  let expected = 0;
+  try {
+    const info = await callApi({ action: "userinfo", url: input });
+    expected = Number(info.user?.awemeCount) || 0;
+    owner = info.user?.nickname ? `${info.user.nickname} (${info.user.awemeCount ?? "?"} video)` : "";
+  } catch {
+    // Không lấy được profile thì vẫn quét bình thường, chỉ mất phần hiển thị.
+  }
+
+  let cursor = 0;
+  let page = 0;
+  let limited = false;
+  const mixes = new Map();
+
+  while (items.length < limit) {
+    status(ui.scanStatus, `Đang quét ${label}${owner}… (${items.length} video)`, "run");
+    const payload = await callApi({
+      action: "user",
+      url: input,
+      cursor,
+      count: Math.min(PAGE_SIZE, limit - items.length),
+    });
+    // Douyin trả nguyên lô bất kể `count` xin bao nhiêu, nên phải tự cắt —
+    // nếu không thì "Quét tối đa 10" vẫn nạp về 42 video.
+    const added = addItems(withinLimit(payload.items, limit));
+    page++;
+    cursor = payload.cursor;
+    limited = Boolean(payload.limited);
+    for (const mix of payload.mixes || []) if (!mixes.has(mix.mixId)) mixes.set(mix.mixId, mix);
+    if (limited || !payload.hasMore || !payload.items?.length || !cursor) break;
+    if (added === 0 && page > 1) break; // cursor lặp → dừng để không loop vô hạn
+  }
+
+  // `aweme/post` chặn khách vãng lai ở ~42 video, nhưng tuyển tập thì phân
+  // trang bình thường — vét nốt bên đó để bù phần bị cắt.
+  if (limited && mixes.size && items.length < limit) {
+    await scanMixes([...mixes.values()], limit, owner);
+  }
+  return { owner, expected };
+}
 
 async function startScan() {
-  const input = el("profileUrl").value.trim();
-  if (!input) return status(ui.scanStatus, "Chưa nhập link profile.", "err");
+  const lines = el("links").value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (!lines.length) return status(ui.scanStatus, "Chưa nhập link nào.", "err");
 
   const limit = Math.max(1, Number(el("scanMax").value) || 200);
   el("startScan").disabled = true;
   savePrefs();
 
-  // Mỗi lần quét là một kênh mới — giữ lại kết quả cũ chỉ tổ trộn hai kênh
-  // vào nhau rồi tải nhầm.
+  // Mỗi lần quét là một danh sách mới — giữ kết quả cũ chỉ tổ trộn lẫn rồi tải nhầm.
   items = [];
   render();
 
-  let cursor = 0;
-  let total = 0;
-  let page = 0;
-  let limited = false;
-  const mixes = new Map();
+  const users = lines.filter((line) => classifyLink(line) === "user");
+  const videos = lines.filter((line) => classifyLink(line) === "video");
+  let failed = 0;
+
   try {
-    status(ui.scanStatus, "Đang đọc thông tin kênh…", "run");
-    let owner = "";
-    let expected = 0;
-    try {
-      const info = await callApi({ action: "userinfo", url: input });
-      expected = Number(info.user?.awemeCount) || 0;
-      owner = info.user?.nickname ? `${info.user.nickname} (${info.user.awemeCount ?? "?"} video)` : "";
-    } catch {
-      // Không lấy được profile thì vẫn quét bình thường, chỉ mất phần hiển thị.
+    if (videos.length) {
+      const result = await resolveVideoLinks(videos, limit);
+      failed = result.failed;
+      // Link share kênh trông y hệt link share video cho tới khi resolve xong.
+      users.push(...result.profiles.filter((secUid) => !users.includes(secUid)));
     }
 
-    while (total < limit) {
-      status(ui.scanStatus, `Đang quét ${owner}… (${total} video)`, "run");
-      const payload = await callApi({
-        action: "user",
-        url: input,
-        cursor,
-        count: Math.min(PAGE_SIZE, limit - total),
-      });
-      // Douyin trả nguyên lô bất kể `count` xin bao nhiêu, nên phải tự cắt —
-      // nếu không thì "Quét tối đa 10" vẫn nạp về 42 video.
-      const added = addItems(withinLimit(payload.items, limit));
-      total = items.length;
-      page++;
-      cursor = payload.cursor;
-      limited = Boolean(payload.limited);
-      for (const mix of payload.mixes || []) if (!mixes.has(mix.mixId)) mixes.set(mix.mixId, mix);
-      if (limited || !payload.hasMore || !payload.items?.length || !cursor) break;
-      if (added === 0 && page > 1) break; // cursor lặp → dừng để không loop vô hạn
-    }
-
-    // `aweme/post` chặn khách vãng lai ở ~42 video, nhưng tuyển tập thì phân
-    // trang bình thường — vét nốt bên đó để bù phần bị cắt.
-    if (limited && mixes.size && items.length < limit) {
-      await scanMixes([...mixes.values()], limit, owner);
+    const scanned = [];
+    for (const [index, user] of users.entries()) {
+      if (items.length >= limit) break;
+      const label = users.length > 1 ? `kênh ${index + 1}/${users.length} ` : "";
+      scanned.push(await scanUser(user, limit, label));
     }
 
     await translateTitles(items, (done, total) =>
       status(ui.scanStatus, `Đang dịch tiêu đề ${done}/${total}…`, "run"));
 
-    // Thiếu so với số kênh khai thì nguyên nhân khác hẳn nhau: chưa có cookie
-    // là do Douyin cắt bớt, còn đã có cookie thì phần chênh gần như luôn là
-    // video đã ẩn hoặc xoá — `awemeCount` vẫn đếm chúng.
-    const shortfall = expected > 0 && items.length < expected;
-    const hasCookie = Boolean(el("cookie").value.trim());
-    let message = `Xong: ${items.length} video trong danh sách${owner ? ` — ${owner}` : ""}.`;
-    if (shortfall && !hasCookie) {
-      message = `Xong: ${items.length}/${expected} video${owner ? ` — ${owner}` : ""}. ` +
-        `Douyin chỉ trả chừng này cho khách vãng lai — dùng cookie để lấy nốt.`;
-    } else if (shortfall) {
-      message = `Xong: ${items.length}/${expected} video${owner ? ` — ${owner}` : ""} ` +
-        `(phần chênh thường là video đã ẩn hoặc xoá).`;
-    }
-    status(ui.scanStatus, message, shortfall && !hasCookie ? "run" : "ok");
+    status(ui.scanStatus, ...scanSummary(scanned, limit, failed));
   } catch (err) {
     status(ui.scanStatus, `Lỗi quét: ${err.message}`, "err");
   } finally {
     el("startScan").disabled = false;
   }
+}
+
+/** Câu tổng kết + màu; tách ra vì mỗi tình huống thiếu video có lý do khác nhau. */
+function scanSummary(scanned, limit, failed) {
+  const tail = failed ? ` (${failed} link lỗi)` : "";
+  if (scanned.length !== 1) {
+    const from = scanned.length ? ` từ ${scanned.length} kênh` : "";
+    return [`Xong: ${items.length} video${from}${tail}.`, failed ? "err" : "ok"];
+  }
+
+  // Thiếu so với số kênh khai thì nguyên nhân khác hẳn nhau: chưa có cookie là
+  // do Douyin cắt bớt, còn đã có cookie thì phần chênh gần như luôn là video đã
+  // ẩn hoặc xoá — `awemeCount` vẫn đếm chúng.
+  const { owner, expected } = scanned[0];
+  const suffix = owner ? ` — ${owner}` : "";
+  // Chạm trần "Quét tối đa" thì thiếu là do mình đặt, không phải Douyin cắt.
+  const shortfall = expected > 0 && items.length < expected && items.length < limit;
+  const hasCookie = Boolean(el("cookie").value.trim());
+
+  if (shortfall && !hasCookie) {
+    return [
+      `Xong: ${items.length}/${expected} video${suffix}${tail}. ` +
+      `Douyin chỉ trả chừng này cho khách vãng lai — dùng cookie để lấy nốt.`,
+      "run",
+    ];
+  }
+  if (shortfall) {
+    return [
+      `Xong: ${items.length}/${expected} video${suffix}${tail} (phần chênh thường là video đã ẩn hoặc xoá).`,
+      "ok",
+    ];
+  }
+  return [`Xong: ${items.length} video trong danh sách${suffix}${tail}.`, failed ? "err" : "ok"];
 }
 
 /**
@@ -577,54 +690,6 @@ async function scanMixes(list, limit, owner) {
   return stillLimited;
 }
 
-/* ═══════════════════════ nhập / xuất link ═══════════════════════ */
-
-async function resolveLinks(links) {
-  const unique = [...new Set(links.map((link) => link.trim()).filter(Boolean))];
-  if (!unique.length) return;
-
-  const threads = Math.max(1, Number(el("threads").value) || 4);
-  let done = 0;
-  let failed = 0;
-  status(ui.scanStatus, `Đang lấy metadata 0/${unique.length}…`, "run");
-
-  const queue = unique.slice();
-  const profiles = new Set();
-  await Promise.all(Array.from({ length: Math.min(threads, queue.length) }, async () => {
-    while (queue.length) {
-      const link = queue.shift();
-      try {
-        const payload = await callApi({ action: "resolve", url: link });
-        addItems([payload.item]);
-      } catch (err) {
-        failed++;
-        // Link share profile: nhận sec_uid từ function, đưa sang phần quét user.
-        if (err.payload?.kind === "user" && err.payload.secUid) profiles.add(err.payload.secUid);
-        console.warn("resolve failed", link, err);
-      }
-      done++;
-      status(ui.scanStatus, `Đang lấy metadata ${done}/${unique.length}…`, "run");
-    }
-  }));
-
-  if (profiles.size) {
-    // Link share profile chứ không phải share video — quét thẳng luôn cho gọn.
-    el("profileUrl").value = [...profiles].join("\n");
-    savePrefs();
-    await startScan();
-    return;
-  }
-
-  await translateTitles(items, (count, total) =>
-    status(ui.scanStatus, `Đang dịch tiêu đề ${count}/${total}…`, "run"));
-
-  status(
-    ui.scanStatus,
-    failed ? `Xong: ${done - failed} link OK, ${failed} link lỗi.` : `Xong: ${done} link.`,
-    failed ? "err" : "ok",
-  );
-}
-
 /* ═══════════════════════ tải video ═══════════════════════ */
 
 /**
@@ -637,12 +702,115 @@ function withinLimit(list, limit) {
   return (list || []).filter(passesFilter).slice(0, room);
 }
 
-function passesFilter(item) {
-  if (!el("useFilter").checked) return true;
-  const minLike = Number(el("minLike").value) || 0;
-  // Không lọc theo lượt phát: Douyin không trả số đó qua web, luôn là 0.
-  return (item.stats?.like ?? 0) >= minLike;
+/**
+ * Ngưỡng của một tiêu chí, `null` khi ô còn trống (chưa nhập thì chưa lọc).
+ * Ngày quy về unix giây: mốc "từ" là 00:00, mốc "đến" là 23:59:59 cùng ngày,
+ * tính theo giờ máy người dùng (không có "Z") — đúng cái họ vừa chọn.
+ */
+function filterLimit(type, raw) {
+  const text = String(raw ?? "").trim();
+  if (!text) return null;
+  if (type.type === "date") {
+    const ms = Date.parse(`${text}T${type.kind === "max" ? "23:59:59" : "00:00:00"}`);
+    return Number.isFinite(ms) ? ms / 1000 : null;
+  }
+  const value = Number(text);
+  return Number.isFinite(value) ? value : null;
 }
+
+function passesFilter(item) {
+  for (const { key, value } of activeFilters) {
+    const type = filterType(key);
+    const limit = type && filterLimit(type, value);
+    if (limit === null || limit === undefined) continue;
+
+    const actual = type.pick(item);
+    // Thiếu dữ liệu (ngày đăng rỗng) thì không thể khẳng định là đạt — loại ra.
+    if (typeof actual !== "number") return false;
+    if (type.kind === "min" ? actual < limit : actual > limit) return false;
+  }
+  return true;
+}
+
+/* ═══════════════════════ UI bộ lọc ═══════════════════════ */
+
+function renderFilters() {
+  const list = el("filterList");
+  list.innerHTML = "";
+
+  for (const entry of activeFilters) {
+    const type = filterType(entry.key);
+    if (!type) continue;
+    const row = document.createElement("div");
+    row.className = "filter-row";
+    row.innerHTML = `
+      <label class="lbl sm" for="f_${type.key}">${escapeHtml(type.label)}</label>
+      <input id="f_${type.key}" type="${type.type || "number"}" ${type.type ? "" : 'min="0"'}
+        placeholder="${escapeHtml(type.hint || "")}" value="${escapeHtml(entry.value)}">
+      <button class="rm" data-remove="${type.key}" title="Bỏ tiêu chí này">✕</button>`;
+    list.appendChild(row);
+  }
+
+  el("filterEmpty").hidden = activeFilters.length > 0;
+  // Hết tiêu chí để thêm thì nút + không còn việc gì để làm.
+  el("addFilter").disabled = activeFilters.length >= FILTER_TYPES.length;
+}
+
+function availableTypes() {
+  const used = new Set(activeFilters.map((entry) => entry.key));
+  return FILTER_TYPES.filter((type) => !used.has(type.key));
+}
+
+function toggleFilterMenu(open) {
+  const menu = el("filterMenu");
+  if (!open) return void (menu.hidden = true);
+
+  menu.innerHTML = "";
+  for (const type of availableTypes()) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.add = type.key;
+    button.textContent = type.label;
+    menu.appendChild(button);
+  }
+  menu.hidden = false;
+}
+
+el("addFilter").addEventListener("click", (event) => {
+  event.stopPropagation();
+  toggleFilterMenu(el("filterMenu").hidden);
+});
+
+el("filterMenu").addEventListener("click", (event) => {
+  const key = event.target.closest("[data-add]")?.dataset.add;
+  if (!key || activeFilters.some((entry) => entry.key === key)) return;
+  activeFilters.push({ key, value: "" });
+  toggleFilterMenu(false);
+  renderFilters();
+  savePrefs();
+  el(`f_${key}`)?.focus();
+});
+
+// Bấm ra ngoài thì đóng menu — không có nút đóng riêng.
+document.addEventListener("click", (event) => {
+  if (!event.target.closest(".add-wrap")) toggleFilterMenu(false);
+});
+
+el("filterList").addEventListener("click", (event) => {
+  const key = event.target.closest("[data-remove]")?.dataset.remove;
+  if (!key) return;
+  activeFilters = activeFilters.filter((entry) => entry.key !== key);
+  renderFilters();
+  savePrefs();
+});
+
+el("filterList").addEventListener("input", (event) => {
+  const key = event.target.id?.replace(/^f_/, "");
+  const entry = activeFilters.find((item) => item.key === key);
+  if (!entry) return;
+  entry.value = event.target.value;
+  savePrefs();
+});
 
 // iOS Safari chỉ tải khi việc tải bắt đầu ngay trong cử chỉ chạm. Tải hàng
 // loạt qua blob luôn xảy ra sau `await fetch()` nên bị chặn im lặng — link
@@ -850,7 +1018,6 @@ async function startDownload() {
 /* ═══════════════════════ events ═══════════════════════ */
 
 function syncFilterVisibility() {
-  el("filterGrid").hidden = !el("useFilter").checked;
   const supported = Boolean(window.showDirectoryPicker);
   el("pickFolder").disabled = !supported;
 
@@ -892,11 +1059,7 @@ el("barDownload").addEventListener("click", () => {
 el("startDownload").addEventListener("click", startDownload);
 el("stopDownload").addEventListener("click", () => abortAll?.abort());
 el("pickFolder").addEventListener("click", pickFolder);
-el("useFilter").addEventListener("change", () => {
-  syncFilterVisibility();
-  savePrefs();
-});
-for (const id of ["threads", "naming", "scanMax", "minLike", "profileUrl", "cookie"]) {
+for (const id of ["threads", "naming", "scanMax", "links", "cookie"]) {
   el(id).addEventListener("change", savePrefs);
 }
 for (const radio of document.querySelectorAll('input[name="dest"]')) {
@@ -907,7 +1070,7 @@ for (const radio of document.querySelectorAll('input[name="dest"]')) {
 }
 
 
-/** Bookmarklet mở tool kèm ID (#import=...) — tự resolve metadata ngay khi load. */
+/** Bookmarklet mở tool kèm ID (#import=...) — nạp thẳng vào ô Link rồi quét. */
 async function importFromHash() {
   const match = location.hash.match(/[#&]import=([^&]+)/);
   if (!match) return;
@@ -919,9 +1082,9 @@ async function importFromHash() {
     .map((token) => (/^\d{15,25}$/.test(token) ? `https://www.douyin.com/video/${token}` : token));
   if (!links.length) return;
 
-  el("importCard").open = true;
-  el("linkInput").value = links.join("\n");
-  await resolveLinks(links);
+  el("links").value = links.join("\n");
+  savePrefs();
+  await startScan();
 }
 
 // Text share của app Douyin dính liền chữ Trung + tham số tracking, nên bắt URL
@@ -944,66 +1107,49 @@ function linksFromText(text) {
   return [...found];
 }
 
-/** Dán text share → box chỉ còn link đã xử lý, mỗi dòng 1 link. */
-function normalizeLinkBox() {
-  const box = el("linkInput");
-  const links = linksFromText(box.value);
-  if (!links.length) return;
-  const cleaned = links.join("\n");
-  if (cleaned === box.value.trim()) return;
-  box.value = cleaned;
-  status(ui.scanStatus, `Đã tách ${links.length} link từ nội dung dán.`, "ok");
-}
-
-/** Ô Người dùng: giữ lại sec_uid hoặc link profile, bỏ hết chữ và tracking. */
-function normalizeProfileBox() {
-  const box = el("profileUrl");
+/**
+ * Ô Link: mỗi dòng thành đúng một link sạch. Xử lý theo từng dòng chứ không gộp
+ * cả ô — dán 2 đoạn share vào 2 dòng thì phải ra 2 link, không phải trộn lẫn.
+ */
+function normalizeLinksBox() {
+  const box = el("links");
   const raw = box.value;
   if (!raw.trim()) return;
 
-  const secUid = raw.match(SEC_UID_RE);
-  if (secUid) {
-    const cleaned = `https://www.douyin.com/user/${secUid[0]}`;
-    if (cleaned !== raw.trim()) {
-      box.value = cleaned;
-      status(ui.scanStatus, "Đã tách link profile từ nội dung dán.", "ok");
-      savePrefs();
+  const out = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const text = line.trim();
+    if (!text) continue;
+    const secUid = text.match(SEC_UID_RE);
+    if (secUid) {
+      out.push(`https://www.douyin.com/user/${secUid[0]}`);
+      continue;
     }
-    return;
+    const links = linksFromText(text);
+    out.push(...(links.length ? links : [text]));
   }
 
-  const links = linksFromText(raw);
-  if (links.length && links[0] !== raw.trim()) {
-    box.value = links[0];
-    status(ui.scanStatus, "Đã tách link profile từ nội dung dán.", "ok");
-    savePrefs();
-  }
+  const cleaned = [...new Set(out)].join("\n");
+  if (!cleaned || cleaned === raw.trim()) return;
+  box.value = cleaned;
+  savePrefs();
+  status(ui.scanStatus, `Đã tách ${cleaned.split("\n").length} link từ nội dung dán.`, "ok");
 }
-
-async function importFromText(text) {
-  const links = linksFromText(text);
-  if (!links.length) return status(ui.scanStatus, "Không tìm thấy link Douyin hợp lệ trong nội dung dán.", "err");
-  await resolveLinks(links);
-}
-
-el("resolvePasted").addEventListener("click", () => {
-  normalizeLinkBox();
-  return importFromText(el("linkInput").value);
-});
 
 // setTimeout 0: chờ nội dung paste vào DOM rồi mới chuẩn hoá.
-el("linkInput").addEventListener("paste", () => setTimeout(normalizeLinkBox, 0));
-el("linkInput").addEventListener("blur", normalizeLinkBox);
-el("profileUrl").addEventListener("paste", () => setTimeout(normalizeProfileBox, 0));
-el("profileUrl").addEventListener("blur", normalizeProfileBox);
-
+el("links").addEventListener("paste", () => setTimeout(normalizeLinksBox, 0));
+el("links").addEventListener("blur", normalizeLinksBox);
 
 el("importFileBtn").addEventListener("click", () => el("importFile").click());
 el("importFile").addEventListener("change", async (event) => {
   const file = event.target.files?.[0];
   if (!file) return;
-  await importFromText(await file.text());
+  const links = linksFromText(await file.text());
   event.target.value = "";
+  if (!links.length) return status(ui.scanStatus, "Không tìm thấy link Douyin nào trong file.", "err");
+  el("links").value = links.join("\n");
+  savePrefs();
+  status(ui.scanStatus, `Đã nạp ${links.length} link từ file — bấm Bắt đầu quét.`, "ok");
 });
 
 ui.filterBox.addEventListener("input", render);
@@ -1055,5 +1201,6 @@ el("clearList").addEventListener("click", () => {
 });
 
 loadPrefs();
+renderFilters();
 render();
 importFromHash();
