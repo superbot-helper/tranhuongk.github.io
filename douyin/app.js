@@ -201,18 +201,19 @@ function render() {
     const index = items.indexOf(item) + 1;
     const tr = document.createElement("tr");
     if (item.selected) tr.className = "checked";
+    // `data-label` để CSS mobile biết ô nào ẩn, ô nào gộp thành dòng số liệu.
     tr.innerHTML = `
       <td><input type="checkbox" data-id="${item.awemeId}" ${item.selected ? "checked" : ""}></td>
-      <td class="num">${index}</td>
+      <td class="num" data-label="STT">${index}</td>
       <td class="thumb">${thumbCell(item)}</td>
-      <td><span class="name-cell" title="${escapeHtml(item.desc || item.title)}">${escapeHtml(item.title)}</span></td>
-      <td><a class="url-cell" href="${item.shareUrl}" target="_blank" rel="noopener">${item.shareUrl.replace("https://www.", "")}</a></td>
-      <td class="num">${num(item.stats?.comment)}</td>
-      <td class="num">${num(item.stats?.like)}</td>
-      <td class="num">${num(item.stats?.share)}</td>
-      <td>douyin</td>
-      <td class="num">${duration(item.duration)}</td>
-      <td><span class="state ${item.state || "wait"}" title="${escapeHtml(item.error || "")}">${stateLabel(item)}</span></td>`;
+      <td data-label="Tên video"><span class="name-cell" title="${escapeHtml(item.desc || item.title)}">${escapeHtml(item.title)}</span></td>
+      <td data-label="URL Video"><a class="url-cell" href="${item.shareUrl}" target="_blank" rel="noopener">${item.shareUrl.replace("https://www.", "")}</a></td>
+      <td class="num" data-label="Bình luận">${num(item.stats?.comment)}</td>
+      <td class="num" data-label="Lượt thích">${num(item.stats?.like)}</td>
+      <td class="num" data-label="Lượt chia sẻ">${num(item.stats?.share)}</td>
+      <td data-label="Nền tảng">douyin</td>
+      <td class="num" data-label="Thời lượng">${duration(item.duration)}</td>
+      <td data-label="Trạng thái"><span class="state ${item.state || "wait"}" title="${escapeHtml(item.error || "")}">${stateLabel(item)}</span></td>`;
     fragment.appendChild(tr);
   });
   ui.body.appendChild(fragment);
@@ -268,6 +269,7 @@ function updateStats() {
   const failed = items.filter((item) => item.state === "err").length;
   ui.statTotal.textContent = items.length;
   ui.statSelected.textContent = selected;
+  el("barSelected").textContent = selected;
   ui.statDone.textContent = done;
   ui.statFail.textContent = failed;
   ui.statFailWrap.hidden = failed === 0;
@@ -660,6 +662,7 @@ async function startDownload() {
   abortAll = new AbortController();
   el("startDownload").disabled = true;
   el("stopDownload").hidden = false;
+  el("barDownload").textContent = "Dừng tải";
   ui.progressWrap.hidden = false;
 
   const threads = Math.min(Math.max(1, Number(el("threads").value) || 4), 8);
@@ -711,6 +714,7 @@ async function startDownload() {
   downloading = false;
   el("startDownload").disabled = false;
   el("stopDownload").hidden = true;
+  el("barDownload").textContent = "Tải xuống";
   const done = items.filter((item) => item.state === "done").length;
   const failed = items.filter((item) => item.state === "err").length;
   status(
@@ -742,6 +746,11 @@ el("clearCookie").addEventListener("click", () => {
 });
 
 el("startScan").addEventListener("click", startScan);
+// Thanh đáy mobile chỉ bấm hộ nút thật, để hai đường đi không lệch trạng thái.
+el("barScan").addEventListener("click", () => el("startScan").click());
+el("barDownload").addEventListener("click", () => {
+  el(downloading ? "stopDownload" : "startDownload").click();
+});
 el("startDownload").addEventListener("click", startDownload);
 el("stopDownload").addEventListener("click", () => abortAll?.abort());
 el("pickFolder").addEventListener("click", pickFolder);
@@ -884,6 +893,16 @@ ui.body.addEventListener("change", (event) => {
   item.selected = box.checked;
   box.closest("tr").classList.toggle("checked", box.checked);
   updateStats();
+});
+
+// Ô tick 24px là mục tiêu quá nhỏ cho ngón tay, nên cả dòng cũng chọn được —
+// trừ link (ảnh, URL) vốn có việc riêng.
+ui.body.addEventListener("click", (event) => {
+  if (event.target.closest("a, input, button")) return;
+  const box = event.target.closest("tr")?.querySelector('input[type="checkbox"][data-id]');
+  if (!box) return;
+  box.checked = !box.checked;
+  box.dispatchEvent(new Event("change", { bubbles: true }));
 });
 
 el("selectFiltered").addEventListener("click", () => {

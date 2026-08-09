@@ -203,7 +203,6 @@ input[readonly] { color: var(--fg-dim); }
 .steps li { margin-bottom: 4px; }
 .steps b { color: var(--fg); }
 
-#snippetBox { font-size: 11.5px; line-height: 1.4; margin-bottom: 8px; }
 
 .hint { margin: 8px 0 0; font-size: 12px; color: var(--fg-dim); }
 .hint code {
@@ -341,13 +340,13 @@ input[readonly] { color: var(--fg-dim); }
 }
 .url-cell:hover { text-decoration: underline; }
 
-.state { font-size: 11.5px; }
+.state { font-size: 12px; }
 .state.wait { color: var(--fg-dim); }
 .state.run { color: var(--warn); }
 .state.done { color: var(--ok); }
 .state.err { color: var(--bad); cursor: help; }
 
-.empty { padding: 26px 14px; text-align: center; color: var(--fg-dim); font-size: 13px; }
+.empty { padding: 26px 14px; text-align: center; color: var(--fg-dim); font-size: 13.5px; }
 
 /* ── progress ── */
 .progress { margin-top: 12px; }
@@ -369,14 +368,127 @@ input[readonly] { color: var(--fg-dim); }
 
 .foot-note { margin: 20px 2px 0; font-size: 12px; color: var(--fg-dim); }
 
+/* Thanh đáy chỉ tồn tại ở mobile; desktop đã có nút trong panel cấu hình.
+   Khai báo trước media query để bản mobile ghi đè được. */
+.mobile-bar { display: none; }
+
+/* Vùng chạm theo thiết bị, không theo bề rộng: tablet 768px cũng là ngón tay,
+   mà các nút desktop chỉ cao 31-38px. */
+@media (pointer: coarse) {
+  .btn { min-height: 44px; }
+  .btn.sm { min-height: 44px; padding: 8px 14px; }
+  .btn.ghost { min-width: 44px; }
+  .sort { min-height: 44px; }
+  input[type="text"], input[type="number"], input[type="search"],
+  input[type="password"], select { min-height: 44px; }
+  .vtable input[type="checkbox"], .switch input, .radio input { width: 22px; height: 22px; }
+}
+
 /* ── responsive ── */
 @media (max-width: 1100px) {
-  .layout { grid-template-columns: 1fr; }
+  /* `1fr` để grid item giữ min-width:auto, nên bảng 11 cột kéo cả trang rộng
+     ra ~900px và tràn ngang. minmax(0,…) cho phép cột co lại. */
+  .layout { grid-template-columns: minmax(0, 1fr); }
   .side { order: -1; }
   .table-scroll { max-height: 60vh; }
+
+  /* Một cột nghĩa là nút tải trôi xuống tận cuối trang — kéo nó lên thanh đáy. */
+  .wrap { padding-bottom: 84px; }
+  .mobile-bar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+    background: var(--bg-card);
+    border-top: 1px solid var(--bd);
+  }
+  .mobile-bar .count { flex: 1; font-size: 12.5px; color: var(--fg-dim); }
+  .mobile-bar .count b { color: var(--fg); }
+  .mobile-bar .btn { margin: 0; white-space: nowrap; }
 }
+
 @media (max-width: 640px) {
   .wrap { padding: 18px 10px 40px; }
   .head h1 { font-size: 22px; }
   .filter-box { margin-left: 0; flex: 1 1 100%; }
+
+  /* Bảng 11 cột không đọc được ở 375px kể cả khi cuộn ngang — mỗi video
+     thành một thẻ, bỏ những cột không mang thông tin trên mobile. */
+  .table-scroll { max-height: none; overflow: visible; }
+  /* Bảng đặt nowrap để cột không gãy; ở dạng thẻ thì đó lại là thứ đẩy dòng
+     số liệu tràn ra ngoài màn hình. */
+  .vtable { white-space: normal; }
+  .vtable, .vtable tbody, .vtable tr, .vtable td { display: block; }
+  .vtable thead { display: none; }
+
+  .vtable tbody tr {
+    position: relative;
+    min-height: 86px;
+    padding: 10px 46px 10px 76px;
+    border-bottom: 1px solid var(--bd-soft);
+  }
+  .vtable tbody tr.checked { background: rgba(45, 212, 191, .06); }
+  .vtable td { padding: 0; border: 0; text-align: left; }
+  .vtable td.num { text-align: left; }
+
+  /* Ô đầu (checkbox) và ô ảnh thoát khỏi dòng chảy, kẹp hai mép thẻ. */
+  .vtable td:first-child {
+    position: absolute;
+    top: 10px;
+    right: 8px;
+    /* Ô tick 15px quá nhỏ cho ngón tay — nới vùng chạm ra 44px. */
+    width: 44px;
+    height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .vtable input[type="checkbox"] { width: 24px; height: 24px; }
+  /* Cả thẻ là vùng chạm để chọn (xem app.js) — con trỏ phải nói ra điều đó. */
+  .vtable tbody tr { cursor: pointer; }
+
+  .vtable td.thumb { position: absolute; top: 10px; left: 10px; padding: 0; }
+  .thumb a { width: 56px; height: 76px; }
+
+  /* STT / URL / nền tảng: thừa khi mỗi thẻ đã là một video và ảnh dẫn tới nó. */
+  .vtable td[data-label="STT"],
+  .vtable td[data-label="URL Video"],
+  .vtable td[data-label="Nền tảng"] { display: none; }
+
+  .name-cell {
+    max-width: none;
+    white-space: normal;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    font-size: 13.5px;
+  }
+
+  /* Số liệu gộp thành một dòng "3 bình luận · 54 thích · …". */
+  .vtable td[data-label="Bình luận"],
+  .vtable td[data-label="Lượt thích"],
+  .vtable td[data-label="Lượt chia sẻ"],
+  .vtable td[data-label="Thời lượng"],
+  .vtable td[data-label="Trạng thái"] {
+    display: inline;
+    font-size: 12px;
+    color: var(--fg-dim);
+  }
+  .vtable td[data-label="Bình luận"]::after { content: " bình luận · "; }
+  .vtable td[data-label="Lượt thích"]::after { content: " thích · "; }
+  .vtable td[data-label="Lượt chia sẻ"]::after { content: " chia sẻ · "; }
+  .vtable td[data-label="Thời lượng"]::after { content: " · "; }
+}
+
+
+/* Trang chỉ có transition ngắn, nhưng ai tắt hiệu ứng thì tôn trọng. */
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }

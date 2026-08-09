@@ -6,7 +6,7 @@
 <title>Douyin Downloader — quét & tải video</title>
 <link rel="icon" href="../avt_x.png">
 <!-- Bump ?v= mỗi lần sửa asset để tránh browser/CDN trả bản cache cũ -->
-<link rel="stylesheet" href="style.css?v=9">
+<link rel="stylesheet" href="style.css?v=18">
 </head>
 <body>
 <div class="wrap">
@@ -196,12 +196,19 @@
 
   </div>
 
+  <!-- Chỉ hiện ở mobile: nút tải luôn trong tầm ngón cái thay vì nằm cuối trang. -->
+  <div class="mobile-bar" id="mobileBar">
+    <span class="count">Đã chọn <b id="barSelected">0</b> video</span>
+    <button class="btn sm" id="barScan">Quét</button>
+    <button class="btn sm primary" id="barDownload">Tải xuống</button>
+  </div>
+
   <p class="foot-note">
     Tool chỉ tải video công khai. Tôn trọng bản quyền của tác giả gốc khi sử dụng lại nội dung.
   </p>
 </div>
 
 <input type="file" id="importFile" accept=".txt,.csv" hidden>
-<script src="app.js?v=9"></script>
+<script src="app.js?v=18"></script>
 </body>
 </html>
