@@ -6,7 +6,7 @@
 <title>Douyin Downloader — quét & tải video</title>
 <link rel="icon" href="../avt_x.png">
 <!-- Bump ?v= mỗi lần sửa asset để tránh browser/CDN trả bản cache cũ -->
-<link rel="stylesheet" href="style.css?v=23">
+<link rel="stylesheet" href="style.css?v=26">
 </head>
 <body>
 <div class="wrap">
@@ -85,7 +85,15 @@
 
           <label class="lbl" for="scanMax">Quét tối đa</label>
           <input type="number" id="scanMax" min="1" max="2000" value="200">
-          <p class="hint">Tool ký <code>a_bogus</code> phía server nên quét chạy thẳng, không cần mở Douyin.</p>
+
+          <label class="switch">
+            <input type="checkbox" id="useFilter">
+            <span>Chỉ lấy video đạt ngưỡng</span>
+          </label>
+          <div class="filter-grid" id="filterGrid" hidden>
+            <label class="lbl sm" for="minLike">Lượt thích ≥</label>
+            <input type="number" id="minLike" min="0" value="0">
+          </div>
 
           <button class="btn primary block" id="startScan">▶ Bắt đầu quét</button>
           <p class="status" id="scanStatus"></p>
@@ -131,10 +139,7 @@
         <summary><span>Cấu hình tải video</span></summary>
         <div class="card-body">
           <label class="lbl" for="threads">Số luồng tải xuống</label>
-          <div class="row gap">
-            <input type="number" id="threads" min="1" max="8" value="4">
-            <span class="muted">luồng</span>
-          </div>
+          <input type="number" id="threads" min="1" max="8" value="4">
 
           <label class="lbl" for="naming">Lưu theo</label>
           <select id="naming">
@@ -142,15 +147,6 @@
             <option value="index_title">STT + Tiêu đề</option>
             <option value="id">ID video</option>
           </select>
-
-          <label class="switch">
-            <input type="checkbox" id="useFilter">
-            <span>Tải video theo bộ lọc</span>
-          </label>
-          <div class="filter-grid" id="filterGrid" hidden>
-            <label class="lbl sm" for="minLike">Lượt thích ≥</label>
-            <input type="number" id="minLike" min="0" value="0">
-          </div>
 
           <label class="lbl">Nơi lưu file</label>
           <label class="radio">
@@ -198,6 +194,6 @@
 </div>
 
 <input type="file" id="importFile" accept=".txt,.csv" hidden>
-<script src="app.js?v=23"></script>
+<script src="app.js?v=26"></script>
 </body>
 </html>

@@ -3,7 +3,10 @@
 // Mọi request Douyin đi qua edge function này (resolve / user / download).
 const DEFAULT_ENDPOINT = "https://lnazpyhoojqotnanrvqf.supabase.co/functions/v1/douyin";
 const LS_KEY = "douyin_dl_prefs_v1";
+const TR_KEY = "douyin_title_vi_v1";
 const PAGE_SIZE = 50; // Douyin trần ~42 item cho request không đăng nhập
+const TR_BATCH = 200; // trần mỗi lượt gọi action=translate của function
+const TR_CACHE_MAX = 3000;
 
 /** @type {Array<Object>} state chính — 1 phần tử = 1 video */
 let items = [];
@@ -94,7 +97,14 @@ function bytes(size) {
 }
 
 function sanitize(name) {
-  return name.replace(/[\\/:*?"<>|\r\n\t]/g, " ").replace(/\s+/g, " ").trim().slice(0, 80) || "video";
+  return name
+    .replace(/[\\/:*?"<>|\r\n\t]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80)
+    // Câu tiếng Việt hay kết thúc bằng dấu chấm → "tên..mp4"; Windows cũng cấm
+    // tên file kết thúc bằng dấu chấm hoặc khoảng trắng.
+    .replace(/[.\s]+$/, "") || "video";
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -142,13 +152,99 @@ function downloadUrl(item, filename) {
   return url.toString();
 }
 
+/* ═══════════════════════ dịch tiêu đề ═══════════════════════ */
+
+// Tiêu đề Douyin gần như luôn là tiếng Trung. Dịch sẵn ngay sau khi quét để cả
+// bảng lẫn tên file tải về đều đọc được, bản gốc giữ trong tooltip.
+const CJK_RE = /[㐀-䶿一-鿿぀-ヿ가-힯]/;
+const needsTranslate = (text) => CJK_RE.test(text || "");
+const displayTitle = (item) => item.titleVi || item.title;
+
+/** Cache theo nguyên văn tiêu đề — quét lại cùng kênh thì không dịch lại. */
+function loadTitleCache() {
+  try {
+    return new Map(Object.entries(JSON.parse(localStorage.getItem(TR_KEY) || "{}")));
+  } catch {
+    return new Map();
+  }
+}
+
+const titleCache = loadTitleCache();
+
+function saveTitleCache() {
+  // Map giữ thứ tự chèn nên cắt từ đầu là bỏ đúng những mục cũ nhất.
+  const entries = [...titleCache.entries()].slice(-TR_CACHE_MAX);
+  try {
+    localStorage.setItem(TR_KEY, JSON.stringify(Object.fromEntries(entries)));
+  } catch {
+    // localStorage đầy — cache mất thì chỉ tốn thêm request dịch, không sao.
+  }
+}
+
+async function callTranslate(texts) {
+  const url = new URL(endpoint());
+  url.searchParams.set("action", "translate");
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ texts }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload.error) throw new Error(payload.error || `HTTP ${response.status}`);
+  return Array.isArray(payload.texts) ? payload.texts : [];
+}
+
+/**
+ * Dịch tiêu đề của `list`. Dịch lỗi thì im lặng giữ nguyên bản gốc — mất phần
+ * dịch chứ không được làm hỏng cả lượt quét.
+ */
+async function translateTitles(list, onProgress) {
+  const missing = [];
+  const seen = new Set();
+  for (const item of list) {
+    if (item.titleVi || !needsTranslate(item.title)) continue;
+    const hit = titleCache.get(item.title);
+    if (hit) {
+      item.titleVi = hit;
+      continue;
+    }
+    if (seen.has(item.title)) continue;
+    seen.add(item.title);
+    missing.push(item.title);
+  }
+  if (!missing.length) return render();
+
+  let done = 0;
+  for (let start = 0; start < missing.length; start += TR_BATCH) {
+    const batch = missing.slice(start, start + TR_BATCH);
+    onProgress?.(done, missing.length);
+    try {
+      const translated = await callTranslate(batch);
+      batch.forEach((text, index) => {
+        const vi = translated[index];
+        if (vi && vi !== text) titleCache.set(text, vi);
+      });
+    } catch (err) {
+      console.warn("dịch tiêu đề lỗi", err);
+      break;
+    }
+    done += batch.length;
+  }
+
+  for (const item of list) {
+    if (!item.titleVi) item.titleVi = titleCache.get(item.title) || "";
+  }
+  saveTitleCache();
+  render();
+}
+
 /* ═══════════════════════ render ═══════════════════════ */
 
 // Thứ tự hiển thị: lọc trước rồi sắp xếp. `index` là thứ tự nạp vào ban đầu nên
 // bấm STT là về lại trạng thái gốc.
 const SORT_VALUES = {
   index: (item) => items.indexOf(item),
-  title: (item) => (item.title || "").toLowerCase(),
+  title: (item) => displayTitle(item).toLowerCase(),
   comment: (item) => item.stats?.comment ?? -1,
   like: (item) => item.stats?.like ?? -1,
   share: (item) => item.stats?.share ?? -1,
@@ -161,8 +257,10 @@ let sortDir = "asc";
 
 function filteredItems() {
   const query = ui.filterBox.value.trim().toLowerCase();
+  // Gõ tiếng Việt hay tiếng Trung đều tìm được: khớp cả bản dịch lẫn bản gốc.
   const matched = query
-    ? items.filter((item) => (item.title || "").toLowerCase().includes(query) ||
+    ? items.filter((item) => displayTitle(item).toLowerCase().includes(query) ||
+      (item.title || "").toLowerCase().includes(query) ||
       (item.awemeId || "").includes(query))
     : items.slice();
 
@@ -213,7 +311,7 @@ function render() {
       <td><input type="checkbox" data-id="${item.awemeId}" ${item.selected ? "checked" : ""}></td>
       <td class="num" data-label="STT">${index}</td>
       <td class="thumb">${thumbCell(item)}</td>
-      <td data-label="Tên video"><span class="name-cell" title="${escapeHtml(item.desc || item.title)}">${escapeHtml(item.title)}</span></td>
+      <td data-label="Tên video"><span class="name-cell" title="${escapeHtml(item.desc || item.title)}">${escapeHtml(displayTitle(item))}</span></td>
       <td data-label="URL Video"><a class="url-cell" href="${item.shareUrl}" target="_blank" rel="noopener">${item.shareUrl.replace("https://www.", "")}</a></td>
       <td class="num" data-label="Bình luận">${num(item.stats?.comment)}</td>
       <td class="num" data-label="Lượt thích">${num(item.stats?.like)}</td>
@@ -403,8 +501,10 @@ async function startScan() {
         cursor,
         count: Math.min(PAGE_SIZE, limit - total),
       });
-      const added = addItems(payload.items || []);
-      total += payload.items?.length || 0;
+      // Douyin trả nguyên lô bất kể `count` xin bao nhiêu, nên phải tự cắt —
+      // nếu không thì "Quét tối đa 10" vẫn nạp về 42 video.
+      const added = addItems(withinLimit(payload.items, limit));
+      total = items.length;
       page++;
       cursor = payload.cursor;
       limited = Boolean(payload.limited);
@@ -418,6 +518,9 @@ async function startScan() {
     if (limited && mixes.size && items.length < limit) {
       await scanMixes([...mixes.values()], limit, owner);
     }
+
+    await translateTitles(items, (done, total) =>
+      status(ui.scanStatus, `Đang dịch tiêu đề ${done}/${total}…`, "run"));
 
     // Thiếu so với số kênh khai thì nguyên nhân khác hẳn nhau: chưa có cookie
     // là do Douyin cắt bớt, còn đã có cookie thì phần chênh gần như luôn là
@@ -463,7 +566,8 @@ async function scanMixes(list, limit, owner) {
         console.warn("mix scan dừng sớm", mix.mixId, err);
         return true;
       }
-      addItems(payload.items || []);
+      addItems(withinLimit(payload.items, limit));
+      if (items.length >= limit) break;
       cursor = payload.cursor;
       if (!payload.hasMore || !payload.items?.length) break;
       if (page === 39) stillLimited = true; // tuyển tập quá dài, dừng cho an toàn
@@ -511,6 +615,9 @@ async function resolveLinks(links) {
     return;
   }
 
+  await translateTitles(items, (count, total) =>
+    status(ui.scanStatus, `Đang dịch tiêu đề ${count}/${total}…`, "run"));
+
   status(
     ui.scanStatus,
     failed ? `Xong: ${done - failed} link OK, ${failed} link lỗi.` : `Xong: ${done} link.`,
@@ -519,6 +626,16 @@ async function resolveLinks(links) {
 }
 
 /* ═══════════════════════ tải video ═══════════════════════ */
+
+/**
+ * Lọc theo ngưỡng rồi cắt cho vừa chỗ trống còn lại của "Quét tối đa".
+ * Cả hai việc phải làm trước khi vào danh sách, vì Douyin trả theo lô của nó
+ * chứ không theo số mình xin.
+ */
+function withinLimit(list, limit) {
+  const room = Math.max(0, limit - items.length);
+  return (list || []).filter(passesFilter).slice(0, room);
+}
 
 function passesFilter(item) {
   if (!el("useFilter").checked) return true;
@@ -542,11 +659,13 @@ function rowDownloadLink(item, index) {
 
 function fileName(item, index) {
   const mode = el("naming").value;
+  // Tên file lấy đúng tiêu đề đang hiện trong bảng, tức bản tiếng Việt nếu có.
+  const title = sanitize(displayTitle(item));
   const base = mode === "id"
     ? item.awemeId
     : mode === "index_title"
-      ? `${String(index).padStart(3, "0")}_${sanitize(item.title)}`
-      : sanitize(item.title);
+      ? `${String(index).padStart(3, "0")}_${title}`
+      : title;
   return `${base}.mp4`;
 }
 
@@ -576,6 +695,7 @@ async function pickFolder() {
     dirHandle = handle;
     el("folderName").value = handle.name;
     document.querySelector('input[name="dest"][value="folder"]').checked = true;
+    syncFilterVisibility();
     savePrefs();
     status(ui.scanStatus, `Sẽ lưu file vào thư mục "${handle.name}".`, "ok");
   } catch (err) {
@@ -691,14 +811,6 @@ async function startDownload() {
       const item = pending.shift();
       const index = items.indexOf(item) + 1;
 
-      if (!passesFilter(item)) {
-        item.state = "skip";
-        refreshRow(item);
-        finished++;
-        tick();
-        continue;
-      }
-
       item.state = "run";
       item.progress = 0;
       item.error = "";
@@ -750,7 +862,7 @@ function syncFilterVisibility() {
   if (!supported && folderRadio.checked) {
     document.querySelector('input[name="dest"][value="browser"]').checked = true;
   }
-  el("folderRow").hidden = !supported;
+  el("folderRow").hidden = !supported || destValue() !== "folder";
 
   el("fsHint").textContent = supported
     ? "Lưu trực tiếp vào thư mục: stream từng chunk ra file, không ngốn RAM."
@@ -788,7 +900,10 @@ for (const id of ["threads", "naming", "scanMax", "minLike", "profileUrl", "cook
   el(id).addEventListener("change", savePrefs);
 }
 for (const radio of document.querySelectorAll('input[name="dest"]')) {
-  radio.addEventListener("change", savePrefs);
+  radio.addEventListener("change", () => {
+    syncFilterVisibility(); // ô chọn thư mục chỉ có nghĩa khi đang lưu vào thư mục
+    savePrefs();
+  });
 }
 
 

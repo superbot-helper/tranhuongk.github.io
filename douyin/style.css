@@ -17,6 +17,10 @@
 
 * { box-sizing: border-box; }
 
+/* `hidden` là display:none của UA stylesheet nên bất kỳ `.row`/`.filter-grid`
+   nào cũng ghi đè được — khiến ô lọc và hàng chọn thư mục ẩn không nổi. */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   background: var(--bg);
