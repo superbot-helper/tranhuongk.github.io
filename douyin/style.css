@@ -348,6 +348,18 @@ input[readonly] { color: var(--fg-dim); }
 
 .empty { padding: 26px 14px; text-align: center; color: var(--fg-dim); font-size: 13.5px; }
 
+.c-dl { width: 1%; }
+.dl-link {
+  display: inline-block;
+  padding: 4px 10px;
+  border: 1px solid var(--bd);
+  border-radius: 6px;
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 12px;
+}
+.dl-link:hover { border-color: var(--accent-dim); }
+
 /* ── progress ── */
 .progress { margin-top: 12px; }
 .progress-bar {
@@ -449,6 +461,12 @@ input[readonly] { color: var(--fg-dim); }
     justify-content: center;
   }
   .vtable input[type="checkbox"] { width: 24px; height: 24px; }
+  .vtable td.row-dl {
+    position: absolute;
+    right: 8px;
+    bottom: 10px;
+  }
+  .dl-link { padding: 8px 12px; font-size: 12.5px; }
   /* Cả thẻ là vùng chạm để chọn (xem app.js) — con trỏ phải nói ra điều đó. */
   .vtable tbody tr { cursor: pointer; }
 
@@ -492,3 +510,7 @@ input[readonly] { color: var(--fg-dim); }
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+/* Radio bị khoá (không có File System Access API) phải trông như bị khoá. */
+.radio.disabled { opacity: .45; cursor: not-allowed; }
+.mobile-bar #barError { color: var(--bad); }

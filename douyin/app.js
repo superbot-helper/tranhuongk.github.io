@@ -102,6 +102,14 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function status(node, text, kind) {
   node.textContent = text;
   node.className = `status${kind ? ` ${kind}` : ""}`;
+
+  // Trên mobile dòng này nằm trong card cấu hình, khuất khỏi tầm nhìn khi bạn
+  // đang ở thanh đáy — nên lỗi phải hiện ngay tại chỗ vừa bấm.
+  if (node === ui.scanStatus) {
+    el("barError").textContent = kind === "err" ? text : "";
+    el("barError").hidden = kind !== "err";
+    el("barCount").hidden = kind === "err";
+  }
 }
 
 /**
@@ -212,7 +220,8 @@ function render() {
       <td class="num" data-label="Lượt chia sẻ">${num(item.stats?.share)}</td>
       <td data-label="Nền tảng">douyin</td>
       <td class="num" data-label="Thời lượng">${duration(item.duration)}</td>
-      <td data-label="Trạng thái"><span class="state ${item.state || "wait"}" title="${escapeHtml(item.error || "")}">${stateLabel(item)}</span></td>`;
+      <td data-label="Trạng thái"><span class="state ${item.state || "wait"}" title="${escapeHtml(item.error || "")}">${stateLabel(item)}</span></td>
+      <td class="row-dl">${rowDownloadLink(item, index)}</td>`;
     fragment.appendChild(tr);
   });
   ui.body.appendChild(fragment);
@@ -518,6 +527,19 @@ function passesFilter(item) {
   return (item.stats?.like ?? 0) >= minLike;
 }
 
+// iOS Safari chỉ tải khi việc tải bắt đầu ngay trong cử chỉ chạm. Tải hàng
+// loạt qua blob luôn xảy ra sau `await fetch()` nên bị chặn im lặng — link
+// thật thì chạm phát tải luôn, không qua JS.
+const isIOS = /iP(hone|ad|od)/.test(navigator.platform) ||
+  (navigator.userAgent.includes("Mac") && navigator.maxTouchPoints > 1);
+
+function rowDownloadLink(item, index) {
+  if (!item.videoUrl) return "";
+  const name = fileName(item, index);
+  return `<a class="dl-link" href="${escapeHtml(downloadUrl(item, name))}" download="${escapeHtml(name)}"
+    title="Tải video này">Tải</a>`;
+}
+
 function fileName(item, index) {
   const mode = el("naming").value;
   const base = mode === "id"
@@ -621,6 +643,16 @@ async function startDownload() {
   const queue = items.filter((item) => item.selected && item.videoUrl && item.state !== "done");
   if (!queue.length) return status(ui.scanStatus, "Không có video nào được chọn để tải.", "err");
 
+  // iOS chặn mọi lượt tải không bắt đầu từ chính cử chỉ chạm, nên tải hàng loạt
+  // ở đây sẽ im lặng không ra file nào. Nói thẳng thay vì để người dùng bấm mãi.
+  if (isIOS) {
+    return status(
+      ui.scanStatus,
+      `iPhone/iPad chỉ cho tải từng video — bấm nút "Tải" trên từng dòng trong danh sách.`,
+      "err",
+    );
+  }
+
   const useFolder = destValue() === "folder";
   if (useFolder) {
     if (!dirHandle) {
@@ -709,9 +741,26 @@ function syncFilterVisibility() {
   el("filterGrid").hidden = !el("useFilter").checked;
   const supported = Boolean(window.showDirectoryPicker);
   el("pickFolder").disabled = !supported;
+
+  // Điện thoại không có File System Access API. Để radio này bấm được ở đó
+  // nghĩa là người dùng chọn xong, bấm Tải, rồi không có gì xảy ra cả.
+  const folderRadio = document.querySelector('input[name="dest"][value="folder"]');
+  folderRadio.disabled = !supported;
+  folderRadio.closest(".radio").classList.toggle("disabled", !supported);
+  if (!supported && folderRadio.checked) {
+    document.querySelector('input[name="dest"][value="browser"]').checked = true;
+  }
+  el("folderRow").hidden = !supported;
+
   el("fsHint").textContent = supported
     ? "Lưu trực tiếp vào thư mục: stream từng chunk ra file, không ngốn RAM."
-    : "Trình duyệt này không có File System Access API — chỉ tải về thư mục Downloads (dùng Chrome/Edge để chọn thư mục).";
+    : isIOS
+      ? `iPhone/iPad chặn tải hàng loạt — dùng nút "Tải" trên từng dòng, file về app Tệp.`
+      : "Trình duyệt này không chọn được thư mục — file về thẳng mục Tải xuống.";
+
+  // Nút tải hàng loạt không thể chạy trên iOS; để lại chỉ tổ bấm rồi báo lỗi.
+  el("startDownload").hidden = isIOS;
+  el("barDownload").hidden = isIOS;
 }
 
 el("grabCookie").hidden = !hasCookieBridge();
