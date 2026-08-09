@@ -6,7 +6,7 @@
 <title>Douyin Downloader — quét & tải video</title>
 <link rel="icon" href="../avt_x.png">
 <!-- Bump ?v= mỗi lần sửa asset để tránh browser/CDN trả bản cache cũ -->
-<link rel="stylesheet" href="style.css?v=18">
+<link rel="stylesheet" href="style.css?v=20">
 </head>
 <body>
 <div class="wrap">
@@ -16,7 +16,6 @@
       <h1>Douyin Downloader</h1>
       <p class="sub">Quét toàn bộ video của 1 user hoặc dán link lẻ — tải bản không watermark</p>
     </div>
-    <button class="btn ghost" id="openSettings" title="Cấu hình endpoint">⚙</button>
   </header>
 
   <div class="layout">
@@ -25,18 +24,14 @@
     <section class="card list-card">
       <div class="card-head">
         <h2>Danh sách video</h2>
-        <div class="row gap tight">
-          <button class="btn sm" id="exportLinks">Xuất link</button>
-          <button class="btn sm primary" id="focusImport">Nhập link</button>
-        </div>
+        <input type="search" id="filterBox" class="filter-box" placeholder="Lọc theo tên video…">
       </div>
 
       <div class="stat-bar">
-        <span class="pill">Số lượng video: <b id="statTotal">0</b></span>
-        <span class="pill">Số lượng chọn: <b id="statSelected">0</b></span>
-        <span class="pill">Tải thành công: <b id="statDone">0</b></span>
+        <span class="pill">Video: <b id="statTotal">0</b></span>
+        <span class="pill">Chọn: <b id="statSelected">0</b></span>
+        <span class="pill">Đã tải: <b id="statDone">0</b></span>
         <span class="pill bad" id="statFailWrap" hidden>Lỗi: <b id="statFail">0</b></span>
-        <input type="search" id="filterBox" class="filter-box" placeholder="Lọc theo tên video…">
       </div>
 
       <div class="table-scroll">
@@ -58,7 +53,7 @@
           </thead>
           <tbody id="videoBody"></tbody>
         </table>
-        <p class="empty" id="emptyState">Chưa có video. Quét user hoặc <b>Nhập link</b> để bắt đầu.</p>
+        <p class="empty" id="emptyState">Chưa có video. Quét kênh hoặc dán link ở mục <b>Nhập link thủ công</b>.</p>
       </div>
 
       <div class="card-foot">
@@ -94,12 +89,16 @@
           <button class="btn primary block" id="startScan">▶ Bắt đầu quét</button>
           <p class="status" id="scanStatus"></p>
           <p class="hint">
-            Douyin chỉ trả <b>~42 video mới nhất</b> cho khách vãng lai, nhưng tool vét thêm qua
-            <b>tuyển tập</b> của kênh nên thường lấy được gần đủ. Phần Douyin giữ lại chỉ mở khi có
-            cookie đăng nhập ở ô bên dưới.
+            Không cookie: <b>~42 video mới nhất</b> + phần vét từ tuyển tập. Muốn đủ cả kênh thì
+            thêm cookie ở mục dưới.
           </p>
+        </div>
+      </details>
 
-          <label class="lbl" for="cookie">Cookie Douyin (tuỳ chọn — để quét quá 42 video)</label>
+      <details class="card" id="cookieCard">
+        <summary><span>Cookie Douyin</span></summary>
+        <div class="card-body">
+          <label class="lbl" for="cookie">Cookie douyin.com (tuỳ chọn — để quét quá 42 video)</label>
           <textarea id="cookie" rows="2" spellcheck="false"
             placeholder="Dán cookie của douyin.com khi đã đăng nhập; bỏ trống vẫn quét được ~42 video mới nhất"></textarea>
           <div class="row gap">
@@ -127,7 +126,7 @@
         </div>
       </details>
 
-      <details class="card" id="dlCard" open>
+      <details class="card" id="dlCard">
         <summary><span>Cấu hình tải video</span></summary>
         <div class="card-body">
           <label class="lbl" for="threads">Số luồng tải xuống</label>
@@ -166,32 +165,18 @@
             <button class="btn sm" id="pickFolder" title="Chọn thư mục">📁</button>
           </div>
           <p class="hint" id="fsHint"></p>
-
-          <button class="btn primary block" id="startDownload">▶ Bắt đầu tải</button>
-          <button class="btn block" id="stopDownload" hidden>■ Dừng tải</button>
-          <div class="progress" id="progressWrap" hidden>
-            <div class="progress-bar"><i id="progressBar"></i></div>
-            <span class="muted" id="progressText"></span>
-          </div>
         </div>
       </details>
 
-      <details class="card" id="settingsCard">
-        <summary><span>Endpoint</span></summary>
-        <div class="card-body">
-          <p class="hint">
-            Trang tĩnh không gọi trực tiếp được Douyin (CDN không có CORS, API web đòi signature)
-            nên mọi request đi qua Supabase edge function <code>douyin</code>.
-          </p>
-          <label class="lbl" for="endpoint">Function URL</label>
-          <input type="text" id="endpoint" spellcheck="false">
-          <div class="row gap">
-            <button class="btn sm" id="testEndpoint">Test endpoint</button>
-            <button class="btn sm" id="resetEndpoint">Mặc định</button>
-          </div>
-          <p class="status" id="endpointStatus"></p>
-        </div>
-      </details>
+      <!-- Nút tải nằm ngoài card cấu hình: cấu hình thì thu gọn được, còn
+           hành động chính phải luôn nhìn thấy. -->
+      <button class="btn primary block" id="startDownload">▶ Bắt đầu tải</button>
+      <button class="btn block" id="stopDownload" hidden>■ Dừng tải</button>
+      <div class="progress" id="progressWrap" hidden>
+        <div class="progress-bar"><i id="progressBar"></i></div>
+        <span class="muted" id="progressText"></span>
+      </div>
+
     </aside>
 
   </div>
@@ -209,6 +194,6 @@
 </div>
 
 <input type="file" id="importFile" accept=".txt,.csv" hidden>
-<script src="app.js?v=18"></script>
+<script src="app.js?v=20"></script>
 </body>
 </html>

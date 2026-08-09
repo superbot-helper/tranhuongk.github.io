@@ -24,7 +24,6 @@ const ui = {
   filterBox: el("filterBox"),
   checkAll: el("checkAll"),
   scanStatus: el("scanStatus"),
-  endpointStatus: el("endpointStatus"),
   progressWrap: el("progressWrap"),
   progressBar: el("progressBar"),
   progressText: el("progressText"),
@@ -39,7 +38,6 @@ function loadPrefs() {
   } catch {
     prefs = {};
   }
-  el("endpoint").value = prefs.endpoint || DEFAULT_ENDPOINT;
   el("profileUrl").value = prefs.profileUrl || "";
   el("cookie").value = prefs.cookie || "";
   el("scanMax").value = prefs.scanMax || 200;
@@ -56,7 +54,6 @@ function loadPrefs() {
 
 function savePrefs() {
   const prefs = {
-    endpoint: el("endpoint").value.trim(),
     profileUrl: el("profileUrl").value.trim(),
     cookie: el("cookie").value.trim(),
     scanMax: Number(el("scanMax").value),
@@ -71,7 +68,9 @@ function savePrefs() {
   localStorage.setItem(LS_KEY, JSON.stringify(prefs));
 }
 
-const endpoint = () => (el("endpoint").value.trim() || DEFAULT_ENDPOINT).replace(/\/+$/, "");
+// Không còn ô nhập endpoint; ?endpoint=... chỉ để trỏ sang function local khi dev.
+const endpoint = () =>
+  (new URLSearchParams(location.search).get("endpoint") || DEFAULT_ENDPOINT).replace(/\/+$/, "");
 const destValue = () => document.querySelector('input[name="dest"]:checked').value;
 
 /* ═══════════════════════ helpers ═══════════════════════ */
@@ -365,6 +364,11 @@ async function startScan() {
   el("startScan").disabled = true;
   savePrefs();
 
+  // Mỗi lần quét là một kênh mới — giữ lại kết quả cũ chỉ tổ trộn hai kênh
+  // vào nhau rồi tải nhầm.
+  items = [];
+  render();
+
   let cursor = 0;
   let total = 0;
   let page = 0;
@@ -503,33 +507,6 @@ async function resolveLinks(links) {
     failed ? `Xong: ${done - failed} link OK, ${failed} link lỗi.` : `Xong: ${done} link.`,
     failed ? "err" : "ok",
   );
-}
-
-function exportLinks() {
-  const chosen = items.filter((item) => item.selected);
-  const source = chosen.length ? chosen : items;
-  if (!source.length) return status(ui.scanStatus, "Danh sách trống, không có gì để xuất.", "err");
-
-  const lines = ["url,title,likes,comments,shares,aweme_id,cover"];
-  for (const item of source) {
-    lines.push([
-      item.shareUrl,
-      `"${(item.title || "").replace(/"/g, "'")}"`,
-      item.stats?.like ?? "",
-      item.stats?.comment ?? "",
-      item.stats?.share ?? "",
-      item.awemeId,
-      item.cover ?? "",
-    ].join(","));
-  }
-  const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = `douyin_links_${new Date().toISOString().slice(0, 10)}.csv`;
-  anchor.click();
-  URL.revokeObjectURL(url);
-  status(ui.scanStatus, `Đã xuất ${source.length} link.`, "ok");
 }
 
 /* ═══════════════════════ tải video ═══════════════════════ */
@@ -754,7 +731,6 @@ el("barDownload").addEventListener("click", () => {
 el("startDownload").addEventListener("click", startDownload);
 el("stopDownload").addEventListener("click", () => abortAll?.abort());
 el("pickFolder").addEventListener("click", pickFolder);
-el("exportLinks").addEventListener("click", exportLinks);
 el("useFilter").addEventListener("change", () => {
   syncFilterVisibility();
   savePrefs();
@@ -846,12 +822,6 @@ async function importFromText(text) {
   await resolveLinks(links);
 }
 
-el("focusImport").addEventListener("click", () => {
-  el("importCard").open = true;
-  el("linkInput").focus();
-  el("importCard").scrollIntoView({ behavior: "smooth", block: "center" });
-});
-
 el("resolvePasted").addEventListener("click", () => {
   normalizeLinkBox();
   return importFromText(el("linkInput").value);
@@ -918,26 +888,6 @@ el("clearList").addEventListener("click", () => {
   if (items.length && !confirm(`Xoá ${items.length} video khỏi danh sách?`)) return;
   items = [];
   render();
-});
-
-el("openSettings").addEventListener("click", () => {
-  el("settingsCard").open = true;
-  el("settingsCard").scrollIntoView({ behavior: "smooth", block: "center" });
-});
-el("resetEndpoint").addEventListener("click", () => {
-  el("endpoint").value = DEFAULT_ENDPOINT;
-  savePrefs();
-  status(ui.endpointStatus, "Đã về endpoint mặc định.", "ok");
-});
-el("endpoint").addEventListener("change", savePrefs);
-el("testEndpoint").addEventListener("click", async () => {
-  status(ui.endpointStatus, "Đang kiểm tra…", "run");
-  try {
-    const payload = await callApi({ action: "health" });
-    status(ui.endpointStatus, `OK — ttwid: ${payload.ttwid}`, payload.ttwid === "ok" ? "ok" : "err");
-  } catch (err) {
-    status(ui.endpointStatus, `Lỗi: ${err.message}`, "err");
-  }
 });
 
 loadPrefs();

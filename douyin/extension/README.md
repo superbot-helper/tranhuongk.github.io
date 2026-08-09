@@ -29,8 +29,7 @@ Cookie sau đó nằm trong `localStorage` của trang tool và được gửi k
 quét (trong POST body, không phải query string). Muốn dọn thì bấm **Xoá cookie**
 trên tool và gỡ extension.
 
-Cookie đăng nhập Douyin là chìa khoá vào tài khoản của bạn — đừng dán nó cho ai,
-và đừng trỏ tool sang endpoint lạ trong phần ⚙ Cấu hình.
+Cookie đăng nhập Douyin là chìa khoá vào tài khoản của bạn — đừng dán nó cho ai.
 
 ## Gỡ
 
