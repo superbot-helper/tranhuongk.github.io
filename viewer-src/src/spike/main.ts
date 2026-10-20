@@ -8,6 +8,7 @@ if (app) {
     <h1>UV Web Viewer spike</h1>
     <label>Worker token <input id="token" type="password" autocomplete="off" spellcheck="false"></label>
     <button id="tls-probe" type="button">Thử TLS command</button>
+    <button id="screen-selftest" type="button">Thử giải mã màn hình</button>
     <pre id="log"></pre>`;
   const token = app.querySelector<HTMLInputElement>('#token')!;
   const button = app.querySelector<HTMLButtonElement>('#tls-probe')!;
@@ -27,5 +28,18 @@ if (app) {
         log(`FAILED ${err.name ?? 'Error'}${err.code ? `(${err.code})` : ''}: ${err.message ?? String(e)}`);
       })
       .finally(() => (button.disabled = false));
+  });
+
+  const screenButton = app.querySelector<HTMLButtonElement>('#screen-selftest')!;
+  screenButton.addEventListener('click', () => {
+    screenButton.disabled = true;
+    import('./screen-selftest')
+      .then(({ runScreenSelfTest }) => runScreenSelfTest(log))
+      .then((ok) => log(ok ? 'screen self-test PASSED' : 'screen self-test FAILED'))
+      .catch((e: unknown) => {
+        const err = e as { name?: string; code?: string; message?: string };
+        log(`FAILED ${err.name ?? 'Error'}${err.code ? `(${err.code})` : ''}: ${err.message ?? String(e)}`);
+      })
+      .finally(() => (screenButton.disabled = false));
   });
 }

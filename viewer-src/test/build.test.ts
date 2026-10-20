@@ -29,5 +29,12 @@ describe.skipIf(!existsSync(join(outDir, 'index.html')))('build output', () => {
     const files = walk(outDir);
     expect(files).toContain('THIRD_PARTY_NOTICES.md');
     expect(read('THIRD_PARTY_NOTICES.md')).toContain('MIT License');
+    expect(read('THIRD_PARTY_NOTICES.md')).toContain('For Zstandard software');
+  });
+
+  test('emits the zstd wasm and the 8bit.dat dictionary as assets', () => {
+    const files = walk(outDir);
+    expect(files.filter((f) => /^assets\/zstd-[^/]+\.wasm$/.test(f))).toHaveLength(1);
+    expect(files.filter((f) => /^assets\/8bit-[^/]+\.dat$/.test(f))).toHaveLength(1);
   });
 });
