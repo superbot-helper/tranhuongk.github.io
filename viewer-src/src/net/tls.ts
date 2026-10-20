@@ -47,6 +47,9 @@ export function openTls(pipe: BytePipe, o: TlsOptions): Promise<TlsChannel> {
   return new Promise((resolve, reject) => {
     const dataCbs: ((b: Uint8Array) => void)[] = [];
     const closeCbs: ((reason: string) => void)[] = [];
+    // Bytes decrypted before the caller attaches onData (e.g. sent right after Finished),
+    // flushed to the first listener like BytePipe does.
+    const pending: Uint8Array[] = [];
     let check: ChainCheck | null = null;
     let connected = false;
     let closedReason: string | null = null;
@@ -96,6 +99,7 @@ export function openTls(pipe: BytePipe, o: TlsOptions): Promise<TlsChannel> {
           },
           onData(cb) {
             dataCbs.push(cb);
+            for (const b of pending.splice(0)) cb(b);
           },
           onClose(cb) {
             if (closedReason !== null) cb(closedReason);
@@ -117,7 +121,8 @@ export function openTls(pipe: BytePipe, o: TlsOptions): Promise<TlsChannel> {
         const bytes = c.data.getBytes();
         if (bytes.length === 0) return;
         const chunk = fromBinary(bytes);
-        for (const cb of dataCbs) cb(chunk);
+        if (dataCbs.length === 0) pending.push(chunk);
+        else for (const cb of dataCbs) cb(chunk);
       },
       closed: () => shutdown(closingLocally ? 'closed locally' : 'TLS closed by peer', null),
       error: (_c, ex) => {

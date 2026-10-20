@@ -157,6 +157,32 @@ describe('openTls over a BytePipe', () => {
     await expect(openTls(client, base)).rejects.toMatchObject({ code: 'handshake' });
   });
 
+  test('application bytes that arrive before onData is registered are buffered, then flushed in order', async () => {
+    const [client, server] = pipePair();
+    const greeting = new TextEncoder().encode('server speaks first');
+    const conn = forge.tls.createConnection({
+      server: true,
+      verifyClient: false,
+      // The relay may send right after its Finished, before the caller attaches onData.
+      connected: (c) => c.prepare(forge.util.binary.raw.encode(greeting)),
+      getCertificate: () => [expiredLeaf.pem, mid.pem],
+      getPrivateKey: () => expiredLeaf.keyPem,
+      tlsDataReady: (c) => server.send(forge.util.binary.raw.decode(c.tlsData.getBytes())),
+      dataReady: () => {},
+      closed: () => server.close(),
+      error: () => {},
+    });
+    server.onData((b) => conn.process(forge.util.binary.raw.encode(b)));
+    const ch = await openTls(client, base);
+    await new Promise((r) => setTimeout(r, 20)); // data lands with no listener yet
+    const received: number[] = [];
+    ch.onData((b) => received.push(...b));
+    expect(received).toEqual([...greeting]);
+    const later: number[] = [];
+    ch.onData((b) => later.push(...b)); // a second listener gets only new bytes
+    expect(later).toEqual([]);
+  });
+
   test('after connect, a pipe close reaches channel listeners; close() closes the pipe', async () => {
     const [client, server] = pipePair();
     startServer(server);

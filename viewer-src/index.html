@@ -1,10 +1,31 @@
 <!doctype html>
-<html lang="en">
+<html lang="vi">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="robots" content="noindex,nofollow">
     <title>UV Web Viewer (spike)</title>
+    <style>
+      :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+      body { margin: 0 auto; padding: 12px 16px 32px; max-width: 960px; }
+      h1 { font-size: 1.25rem; margin: 0 0 12px; }
+      h1 small { font-weight: normal; opacity: 0.6; }
+      form { display: flex; flex-direction: column; gap: 10px; max-width: 420px; }
+      label { display: flex; flex-direction: column; gap: 4px; font-size: 0.9rem; }
+      label.check { flex-direction: row; align-items: center; gap: 8px; }
+      input:not([type="checkbox"]) { font-size: 16px; padding: 8px; box-sizing: border-box; width: 100%; }
+      .row { display: flex; gap: 8px; }
+      .row button { flex: 1; }
+      button { font-size: 1rem; padding: 10px 12px; }
+      button.secondary { font-size: 0.85rem; padding: 6px 10px; align-self: flex-start; }
+      #status { font-weight: 600; margin: 14px 0 4px; }
+      #stats { font-size: 0.8rem; opacity: 0.75; margin: 0 0 8px; min-height: 1em; }
+      #screen { display: block; width: 100%; height: auto; background: #000; }
+      details { margin: 12px 0; }
+      details label, details button { margin-top: 8px; }
+      #log { font-size: 0.75rem; white-space: pre-wrap; word-break: break-word; max-height: 40vh; overflow: auto;
+             background: rgba(127, 127, 127, 0.12); padding: 8px; margin: 8px 0 0; }
+    </style>
   </head>
   <body>
     <main id="app"></main>
