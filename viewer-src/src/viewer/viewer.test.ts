@@ -399,6 +399,90 @@ describe('desktop viewer page', () => {
     expect(e.defaultPrevented).toBe(false);
   });
 
+  /** VK_PACKET down/up pairs for each UTF-16 unit of `s`. */
+  const vkPacketText = (s: string) => [...s].flatMap((c) => [packet(1, 0xe7, 0, c.charCodeAt(0)), packet(2, 0xe7, 0, c.charCodeAt(0))]);
+  const composition = (type: string, data: string) => textarea.dispatchEvent(new CompositionEvent(type, { bubbles: true, data }));
+  const beforeInput = (inputType: string, data: string | null, isComposing = false) =>
+    textarea.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType, data, isComposing }));
+
+  test('macOS Telex: composing keys send nothing, the committed word goes out as VK_PACKET units', async () => {
+    connect();
+    pointer('pointerdown', 100, 50);
+    pointer('pointerup', 100, 50, { buttons: 0 });
+    await settle();
+    const n = session.sent.length;
+    const preview = $<HTMLDivElement>('#composition');
+    composition('compositionstart', '');
+    const steps: Array<[string, string, string]> = [['KeyV', 'V', 'V'], ['KeyI', 'i', 'Vi'], ['KeyE', 'e', 'Vie'], ['KeyE', 'e', 'Viê'], ['KeyJ', 'j', 'Việ'], ['KeyT', 't', 'Việt']];
+    for (const [code, k, marked] of steps) {
+      keyEvent('keydown', key(code, k, { keyCode: 229, isComposing: true }));
+      beforeInput('insertCompositionText', marked, true);
+      composition('compositionupdate', marked);
+      keyEvent('keyup', key(code, k, { isComposing: true }));
+    }
+    expect(preview.hidden).toBe(false);
+    expect(preview.textContent).toBe('Việt');
+    expect(preview.style.left).toBe('100px');
+    composition('compositionend', 'Việt');
+    await settle();
+    expect(sentSince(n)).toEqual(vkPacketText('Việt'));
+    expect(preview.hidden).toBe(true);
+    expect(textarea.value).toBe('');
+  });
+
+  test('soft keyboard text, Backspace and Enter reach the remote', async () => {
+    connect();
+    beforeInput('insertText', 'ệ');
+    beforeInput('deleteContentBackward', null);
+    beforeInput('insertLineBreak', null);
+    await settle();
+    expect(session.sent).toEqual([
+      ...vkPacketText('ệ'),
+      packet(1, 0x08, 0x0e, 8), packet(2, 0x08, 0x0e, 8),
+      packet(1, 0x0d, 0x1c, 13), packet(2, 0x0d, 0x1c, 13),
+    ]);
+  });
+
+  test('macOS Option+p types "π": Alt is lifted under a Ctrl tap first, then the character', async () => {
+    viewer.destroy();
+    Object.defineProperty(navigator, 'platform', { configurable: true, get: () => 'MacIntel' });
+    try {
+      document.body.innerHTML = '<main id="app"></main>';
+      app = document.getElementById('app')!;
+      viewer = mountViewer(app, { createSession: () => session, workerUrl: 'ws://127.0.0.1:8787', schedule: (cb) => cb() });
+      canvas = $<HTMLCanvasElement>('#screen');
+      textarea = $<HTMLTextAreaElement>('#keyboard-input');
+      connect();
+      keyEvent('keydown', key('AltLeft', 'Alt', { altKey: true }));
+      const down = keyEvent('keydown', key('KeyP', 'π', { altKey: true }));
+      keyEvent('keyup', key('KeyP', 'π', { altKey: true }));
+      keyEvent('keyup', key('AltLeft', 'Alt'));
+      await settle();
+      expect(down.defaultPrevented).toBe(true);
+      expect(session.sent).toEqual([
+        packet(3, 0xa4, 0x38),
+        packet(3, 0xa2, 0x1d), packet(4, 0xa2, 0x1d), packet(4, 0xa4, 0x38),
+        ...vkPacketText('π'),
+      ]);
+    } finally {
+      delete (navigator as unknown as Record<string, unknown>).platform;
+    }
+  });
+
+  test('text and the composition preview stay local while Điều khiển is off', async () => {
+    connect();
+    $<HTMLButtonElement>('#control-toggle').click();
+    await settle();
+    const n = session.sent.length;
+    composition('compositionstart', '');
+    composition('compositionupdate', 'Vi');
+    expect($<HTMLDivElement>('#composition').hidden).toBe(true);
+    composition('compositionend', 'Việt');
+    beforeInput('insertText', 'ệ');
+    await settle();
+    expect(session.sent.length).toBe(n);
+  });
+
   test('the connect form collapses once connected and returns after the session closes', () => {
     connect();
     expect($('#connect-form').hidden).toBe(true);

@@ -76,6 +76,7 @@ const LAYOUT = `
       <canvas id="screen" width="16" height="9"></canvas>
       <textarea id="keyboard-input" aria-label="Bàn phím gửi tới máy Windows" autocomplete="off" autocapitalize="off"
         autocorrect="off" spellcheck="false" tabindex="-1"></textarea>
+      <div id="composition" class="composition" aria-hidden="true" hidden></div>
     </div>
   </section>
   <details id="diagnostics"></details>`;
@@ -138,6 +139,7 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
   const input = new DesktopInput({
     canvas,
     textarea,
+    composition: $<HTMLDivElement>('composition'),
     view: () => screenView.view(),
     onOverflow: () => {
       controlOn = false;

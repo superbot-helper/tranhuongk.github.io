@@ -61,6 +61,8 @@ function isButton(b: number): b is PointerButton {
 export interface DesktopInputOptions {
   canvas: HTMLCanvasElement;
   textarea: HTMLTextAreaElement;
+  /** Local preview of uncommitted IME text (never sent), inside the textarea's positioned parent. */
+  composition?: HTMLElement;
   view: () => View;
   /** The queue filled: held input was released; the page must turn control off and say so. */
   onOverflow: () => void;
@@ -78,6 +80,10 @@ export class DesktopInput {
   private binaryKeyboard = false;
   /** Bumped on overflow so the rest of an in-progress batch is dropped (its keys were just released). */
   private overflows = 0;
+  /** Where the last press landed, relative to the composition preview's parent: the remote caret is likely there. */
+  private caretHint: { x: number; y: number } | null = null;
+  /** Keys whose keydown was sent as text: their keyup (still flagged Alt) must not press Alt again. */
+  private readonly textKeys = new Set<string>();
   private readonly detachers: Array<() => void> = [];
 
   constructor(private readonly o: DesktopInputOptions) {
@@ -99,9 +105,8 @@ export class DesktopInput {
     this.detachers.push(
       attachTextInput(textarea, {
         key: (e, down) => this.onKey(e, down),
-        text: (s) => {
-          if (this.keyboardActive()) this.push(this.encoder!.text(s));
-        },
+        text: (s, source) => this.onText(s, source),
+        marked: (s) => this.showMarked(s),
       }),
     );
   }
@@ -146,6 +151,7 @@ export class DesktopInput {
 
   /** Enqueue a release of every held key and button behind what is pending. */
   releaseAll(): void {
+    this.textKeys.clear();
     if (this.encoder && this.queue) this.pushRaw(this.encoder.releaseAll());
   }
 
@@ -210,6 +216,11 @@ export class DesktopInput {
 
   private onPointerDown(e: PointerEvent): void {
     this.focusKeyboard();
+    const parent = this.o.composition?.parentElement;
+    if (parent) {
+      const r = parent.getBoundingClientRect();
+      this.caretHint = { x: e.clientX - r.left + parent.scrollLeft, y: e.clientY - r.top + parent.scrollTop };
+    }
     if (!this.active() || !isButton(e.button)) return;
     e.preventDefault();
     const p = toRemote(e.clientX, e.clientY, this.o.view());
@@ -262,6 +273,7 @@ export class DesktopInput {
     this.capsLock = e.getModifierState?.('CapsLock') ?? this.capsLock;
     if (!this.keyboardActive()) return;
     if (codeToKey(e.code) !== null) e.preventDefault();
+    if (!down && this.textKeys.delete(e.code)) return;
     const input: KeyInput = {
       code: e.code,
       key: e.key,
@@ -273,6 +285,37 @@ export class DesktopInput {
       repeat: e.repeat,
     };
     this.push(down ? this.encoder!.keyDown(input) : this.encoder!.keyUp(input));
+  }
+
+  private onText(s: string, source?: KeyboardEvent): void {
+    if (!this.keyboardActive()) return;
+    const encoder = this.encoder!;
+    if (source && (source.altKey || source.ctrlKey)) {
+      // Option / AltGr typed this character but is held on the remote too, where Alt+char is a menu
+      // shortcut (WM_SYSCHAR): lift the modifiers first. A lone Alt going up opens the menu bar, so a
+      // Ctrl tap goes under it first (an Alt+Ctrl press-release does nothing on Windows).
+      const base = { key: source.key, shift: source.shiftKey, meta: false, capsLock: this.capsLock, repeat: false };
+      if (source.altKey && !source.ctrlKey) {
+        this.push(encoder.keyDown({ ...base, code: 'ControlLeft', key: 'Control', ctrl: true, alt: true }));
+        this.push(encoder.keyUp({ ...base, code: 'ControlLeft', key: 'Control', ctrl: false, alt: true }));
+      }
+      this.push(encoder.keyUp({ ...base, code: source.code, ctrl: false, alt: false }));
+      this.textKeys.add(source.code);
+    }
+    this.push(encoder.text(s));
+  }
+
+  private showMarked(s: string): void {
+    const box = this.o.composition;
+    if (!box) return;
+    const visible = s !== '' && this.keyboardActive();
+    box.textContent = visible ? s : '';
+    box.hidden = !visible;
+    if (!visible || !this.caretHint) return;
+    const parent = box.parentElement;
+    const maxLeft = parent?.clientWidth ? parent.scrollLeft + parent.clientWidth - box.offsetWidth : Infinity;
+    box.style.left = `${Math.max(0, Math.min(this.caretHint.x, maxLeft))}px`;
+    box.style.top = `${Math.max(0, this.caretHint.y + 12)}px`;
   }
 
   // --- queue ------------------------------------------------------------------------------
