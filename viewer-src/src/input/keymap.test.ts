@@ -120,8 +120,14 @@ describe('keymap (MacRemoteInputEncoder.mapping)', () => {
     expect(SWIFT_TABLE).toHaveLength(109);
     expect(new Set(SWIFT_TABLE.map(([code]) => code)).size).toBe(109);
     for (const [code, vk, scan] of SWIFT_TABLE) {
+      // The one deliberate divergence (ruling P1-R6): browser NumLock is VK_NUMLOCK, not Swift's VK_CLEAR.
+      if (code === 'NumLock') continue;
       expect(codeToKey(code), code).toEqual({ vk, scan });
     }
+  });
+
+  test('NumLock is VK_NUMLOCK (ruling P1-R6), not Swift VK_CLEAR', () => {
+    expect(codeToKey('NumLock')).toEqual({ vk: 0x90, scan: 0x45 });
   });
 
   test('brief examples', () => {

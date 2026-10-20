@@ -120,6 +120,8 @@ export class InputEncoder {
   private pointer: Point | null = null;
   private lastMoveFlags: number | null = null;
   private wheelRemainder = 0;
+  /** Caps Lock state this encoder last toggled the remote to (assumed off at start). */
+  private remoteCaps = false;
 
   /** `binaryKeyboard` is the negotiated capability (peer >= 6.2.13); it is not inferred here. */
   constructor(o: { binaryKeyboard: boolean }) {
@@ -233,17 +235,18 @@ export class InputEncoder {
         this.releaseKey(e.code, out);
       }
       this.reconcileModifier(group, pressed ? null : e.code, out);
-    } else if (pressed) {
-      if (e.code === 'CapsLock') {
-        // Windows toggles on key-down; browsers report one down per physical press (repeats ignored).
-        if (!e.repeat) {
-          this.pressKey(e.code, info, 0, false, out);
-          this.releaseKey(e.code, out);
-        }
-      } else {
-        this.pressKey(e.code, info, this.characterFor(info, e), false, out);
+    } else if (e.code === 'CapsLock') {
+      // macOS reports keydown only when turning Caps Lock on and keyup only when turning it off; PCs report
+      // both for each press. Windows toggles on key-down, so tap once whenever the reported state differs
+      // from the remote state we last set (ruling P1-R9).
+      if (e.capsLock !== this.remoteCaps) {
+        this.remoteCaps = e.capsLock;
+        this.pressKey(e.code, info, 0, false, out);
+        this.releaseKey(e.code, out);
       }
-    } else if (e.code !== 'CapsLock') {
+    } else if (pressed) {
+      this.pressKey(e.code, info, this.characterFor(info, e), false, out);
+    } else {
       this.releaseKey(e.code, out);
     }
     return out;

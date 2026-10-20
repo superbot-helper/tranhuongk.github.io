@@ -72,8 +72,9 @@ add('NumpadDivide', 0x6f, 0xe035, { text: true });
 add('NumpadEnter', 0x0d, 0xe01c, { control: 13 });
 add('NumpadSubtract', 0x6d, 0x4a, { text: true });
 add('NumpadEqual', 0xbb, 0x59, { text: true }); // Swift: US OEM_PLUS
-// A Mac keypad Clear key reports code NumLock; Swift sends VK_CLEAR, never a NumLock toggle.
-add('NumLock', 0x0c, 0x4c);
+// Browser NumLock is VK_NUMLOCK (ruling P1-R6). Swift sent VK_CLEAR (0x0c/0x4c) for the Mac keypad Clear key;
+// browsers report that key as NumLock too, and it deliberately toggles NumLock on the remote here.
+add('NumLock', 0x90, 0x45);
 const numpadScan = [0x52, 0x4f, 0x50, 0x51, 0x4b, 0x4c, 0x4d, 0x47, 0x48, 0x49];
 numpadScan.forEach((scan, n) => add(`Numpad${n}`, 0x60 + n, scan, { text: true }));
 

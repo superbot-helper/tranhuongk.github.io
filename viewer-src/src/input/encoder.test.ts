@@ -179,12 +179,36 @@ describe('keyboard (MacRemoteInputEncoderTests.swift)', () => {
     expect(kv(encoder.keyUp(ev('KeyA', 'Process')))).toEqual([[2, 0x41]]);
   });
 
-  test('CapsLock is a tap per physical press and ignores repeat and keyup', () => {
+  test('CapsLock macOS sequence: keydown only when turning on, keyup only when turning off, one tap each', () => {
     const encoder = bin();
     expect(kv(encoder.keyDown(ev('CapsLock', 'CapsLock', { capsLock: true })))).toEqual([[1, 0x14], [2, 0x14]]);
     expect(encoder.keyDown(ev('CapsLock', 'CapsLock', { capsLock: true, repeat: true }))).toEqual([]);
+    expect(kv(encoder.keyUp(ev('CapsLock', 'CapsLock', { capsLock: false })))).toEqual([[1, 0x14], [2, 0x14]]);
+    // Next on/off cycle behaves the same.
+    expect(encoder.keyDown(ev('CapsLock', 'CapsLock', { capsLock: true }))).toHaveLength(2);
+    expect(encoder.keyUp(ev('CapsLock', 'CapsLock', { capsLock: false }))).toHaveLength(2);
+    expect(encoder.releaseAll()).toEqual([]);
+  });
+
+  test('CapsLock PC sequence: keydown/keyup pairs with the state toggling on keydown give exactly one tap per toggle', () => {
+    const encoder = bin();
+    // Press 1: on.
+    expect(encoder.keyDown(ev('CapsLock', 'CapsLock', { capsLock: true }))).toHaveLength(2);
+    expect(encoder.keyUp(ev('CapsLock', 'CapsLock', { capsLock: true }))).toEqual([]);
+    // Press 2: off.
+    expect(encoder.keyDown(ev('CapsLock', 'CapsLock', { capsLock: false }))).toHaveLength(2);
+    expect(encoder.keyUp(ev('CapsLock', 'CapsLock', { capsLock: false }))).toEqual([]);
+    // Press 3: on again, then a held-key repeat that changes nothing.
+    expect(encoder.keyDown(ev('CapsLock', 'CapsLock', { capsLock: true }))).toHaveLength(2);
+    expect(encoder.keyDown(ev('CapsLock', 'CapsLock', { capsLock: true, repeat: true }))).toEqual([]);
     expect(encoder.keyUp(ev('CapsLock', 'CapsLock', { capsLock: true }))).toEqual([]);
     expect(encoder.releaseAll()).toEqual([]);
+  });
+
+  test('CapsLock with caps already off and unchanged sends nothing', () => {
+    const encoder = bin();
+    expect(encoder.keyDown(ev('CapsLock', 'CapsLock'))).toEqual([]);
+    expect(encoder.keyUp(ev('CapsLock', 'CapsLock'))).toEqual([]);
   });
 
   test('capsAndCapability: caps rides real keyboard packets; legacy peers get no key packets', () => {
