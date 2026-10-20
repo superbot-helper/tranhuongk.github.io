@@ -7,7 +7,8 @@ import { commandCipher, md5Hex } from '../proto/crypto';
 import { decodeEnvelope, encodeEnvelope, encodeSystem, keepaliveCommandEnvelope, PreambleDecoder } from '../proto/envelope';
 import { encodeFrame, FrameDecoder } from '../proto/frame';
 import { decodeMultipart, encodeMultipart } from '../proto/multipart';
-import { screenLong, screenParts, screenWords } from '../proto/screen-test-utils';
+import { cursorShapeRequest } from '../proto/cursor';
+import { rawScreenZstd, screenLong, screenParts, screenWords } from '../proto/screen-test-utils';
 import { concat, enc, u8 } from '../proto/test-utils';
 import type { ClientIdentity } from './identity';
 import { COMMAND_ATTEMPT_MS, RelaySession, type SessionEvent } from './relay-session';
@@ -129,6 +130,8 @@ class World {
   readonly commandTexts: string[] = [];
   readonly peerTexts: string[] = [];
   readonly peerSystem: string[] = [];
+  /** Every forward envelope to the partner, raw (formatFlag + payload bytes). */
+  readonly peerForwards: { formatFlag: boolean; payload: Uint8Array }[] = [];
   readonly session: RelaySession;
 
   constructor(readonly o: WorldOptions = {}) {
@@ -197,6 +200,7 @@ class World {
     }
     expect(env.address).toBe(PARTNER_PUBLIC_IP);
     expect(env.port).toBe(PARTNER_PORT);
+    this.peerForwards.push({ formatFlag: env.formatFlag, payload: env.payload });
     const t = text(env.payload);
     this.peerTexts.push(t);
     if (t.startsWith('login:')) {
@@ -272,12 +276,15 @@ describe('RelaySession', () => {
     expect(login[12]).toBe('0'); // controlMode 0
     expect(login[15]).toMatch(/^[0-9A-Za-z]{16}$/); // connection hash
     expect(login[20]).toBe('partner-token');
-    expect(w.peerTexts.slice(1)).toEqual(['17', '18']);
+    expect(w.peerTexts.slice(1)).toEqual(['17', '28|||1', '18']);
 
     const accepted = w.events.find((e) => e.type === 'accepted');
     expect(accepted).toEqual({
       type: 'accepted',
-      peer: { displayName: 'Name', version: '6.6.133', width: 2, height: 1, virtualLeft: 0, virtualTop: 0 },
+      peer: {
+        displayName: 'Name', version: '6.6.133', width: 2, height: 1, virtualLeft: 0, virtualTop: 0,
+        supportsBinaryKeyboard: true, allowsRemoteInput: true, monitors: [],
+      },
     });
     const frame = w.events.find((e) => e.type === 'frame');
     expect(frame?.type === 'frame' && Array.from(frame.bitmap.rgba)).toEqual([0, 255, 0, 255, 255, 0, 0, 255]);
@@ -498,13 +505,16 @@ describe('RelaySession', () => {
     await waitFor(() => w.session.phase === 'active');
     w.peer!.deliver(fromPartner(encodeMultipart(firstFrame(5)))); // wrong sequence number
     await waitFor(() => w.peerTexts.filter((t) => t.startsWith('login:')).length === 2);
-    expect(w.peerTexts.slice(1, 3)).toEqual(['17', '18']);
+    expect(w.peerTexts.slice(1, 4)).toEqual(['17', '28|||1', '18']);
     const refresh = w.peerTexts.filter((t) => t.startsWith('login:'))[1]!.split(':');
     expect(refresh[12]).toBe('0'); // clearControlMode
     // The refreshed initialization returns the session to active.
     await waitFor(() => w.session.phase === 'active' && w.peerTexts.filter((t) => t === '17').length === 2);
     expect(w.closedEvent()).toBeUndefined();
     expect(w.statuses().join('\n')).toContain('sequenceMismatch');
+    // Control is suspended for the refresh (Swift refreshScreen); cursor positions stay on once.
+    expect(w.events).toContainEqual({ type: 'inputPermission', allowed: false });
+    expect(w.peerTexts.filter((t) => t === '28|||1')).toHaveLength(1);
   });
 
   test('unsupported Windows version → closed(unsupportedVersion)', async () => {
@@ -518,16 +528,16 @@ describe('RelaySession', () => {
     const w = new World({ sendFrameAfter17: false });
     w.connect();
     await waitFor(() => w.session.phase === 'active');
-    w.peer!.deliver(fromPartner(encodeMultipart([u8(28), u8(1, 2, 3)])));
-    w.peer!.deliver(fromPartner(encodeMultipart([u8(28), u8(4)])));
-    w.peer!.deliver(fromPartner(encodeMultipart([u8(23)])));
+    w.peer!.deliver(fromPartner(encodeMultipart([u8(12), u8(1, 2, 3)])));
+    w.peer!.deliver(fromPartner(encodeMultipart([u8(12), u8(4)])));
+    w.peer!.deliver(fromPartner(encodeMultipart([u8(26), enc('not-our-hash')])));
     w.peer!.deliver(fromPartner(encodeMultipart([u8(1)]), '192.0.2.200', 1));
     w.peer!.deliver(fromPartner(encodeMultipart([u8(26)]), '192.0.2.200', 1));
     w.peer!.deliver(fromPartner(encodeMultipart([u8(1)]), '192.0.2.200', 2));
     w.peer!.deliver(fromPartner(encodeMultipart([u8(1)]), '192.0.2.200', 1));
     await waitFor(() => w.session.diagnostics.ignoredSources === 4);
     const ignored = w.statuses().filter((s) => s.startsWith('ignored'));
-    expect(ignored).toEqual(['ignored 28', 'ignored 23']);
+    expect(ignored).toEqual(['ignored 12', 'ignored 26']);
     expect(w.session.diagnostics.ignoredMessages).toBe(3);
     // Each distinct foreign addr:port is logged once (relay switch / stray sender is visible).
     expect(w.statuses().filter((s) => s.startsWith('nguồn lạ'))).toEqual(['nguồn lạ 192.0.2.200:1', 'nguồn lạ 192.0.2.200:2']);
@@ -695,5 +705,208 @@ describe('RelaySession', () => {
   test('decodes the partner messages it sends as multipart', () => {
     // Guard for the fixtures above: a frame is a multipart payload whose first part is command 1.
     expect(decodeMultipart(encodeMultipart(firstFrame()))[0]).toEqual(u8(1));
+  });
+});
+
+// Phase 1 Task 2: control API, input permission (49), cursor (3/4/28), host re-login (23).
+describe('RelaySession control', () => {
+  const unicode = (t: string) => Uint8Array.from(Array.from(t).flatMap((c) => [c.charCodeAt(0), 0]));
+  const inputPermissions = (w: World) => w.events.flatMap((e) => (e.type === 'inputPermission' ? [e.allowed] : []));
+  const cursorEvents = (w: World) => w.events.flatMap((e) => (e.type === 'cursor' ? [e.event] : []));
+  const logins = (w: World) => w.peerTexts.filter((t) => t.startsWith('login:'));
+
+  async function activeWorld(o: WorldOptions = {}): Promise<World> {
+    const w = new World({ sendFrameAfter17: false, ...o });
+    w.connect();
+    await waitFor(() => w.session.phase === 'active' && w.peerTexts.includes('28|||1'));
+    return w;
+  }
+
+  test('(a) command 49: flag 1 → inputPermission(false), flag 0 → true; sendCommand follows it', async () => {
+    const w = await activeWorld();
+    w.peer!.deliver(fromPartner(encodeMultipart([u8(49), u8(1)])));
+    await waitFor(() => inputPermissions(w).length === 1);
+    expect(inputPermissions(w)).toEqual([false]);
+    w.peer!.deliver(fromPartner(encodeMultipart([u8(49), u8(0)])));
+    await waitFor(() => inputPermissions(w).length === 2);
+    expect(inputPermissions(w)).toEqual([false, true]);
+    expect(w.statuses().some((s) => s.startsWith('ignored 49'))).toBe(false);
+    // A 49 without its flag byte is malformed (Swift malformedInitialization).
+    w.peer!.deliver(fromPartner(encodeMultipart([u8(49)])));
+    await waitFor(() => w.closedEvent());
+    expect(w.events.at(-1)).toEqual({ type: 'closed', reason: 'protocol' });
+  });
+
+  test('(a) command 49 before active emits nothing, but the first accepted peer reports view-only', async () => {
+    const w = new World({ initParts: null, sendFrameAfter17: false });
+    w.connect();
+    await waitFor(() => logins(w).length === 1);
+    w.peer!.deliver(fromPartner(encodeMultipart([u8(49), u8(1)])));
+    w.peer!.deliver(fromPartner(encodeMultipart(INIT_PARTS())));
+    await waitFor(() => w.session.phase === 'active');
+    expect(inputPermissions(w)).toEqual([]);
+    const accepted = w.events.find((e) => e.type === 'accepted');
+    expect(accepted?.type === 'accepted' && accepted.peer.allowsRemoteInput).toBe(false);
+    await expect(w.session.sendCommand({ type: 'action', action: 'lock' }, { requiresControl: true }))
+      .rejects.toMatchObject({ code: 'viewOnly' });
+  });
+
+  test('(b) sendCommand(ctrlAltDel): view-only → reject viewOnly; allowed → UTF-16LE "22" with formatFlag', async () => {
+    const w = await activeWorld();
+    w.peer!.deliver(fromPartner(encodeMultipart([u8(49), u8(1)])));
+    await waitFor(() => inputPermissions(w).length === 1);
+    const sent = w.peerForwards.length;
+    await expect(w.session.sendCommand({ type: 'action', action: 'ctrlAltDel' }, { requiresControl: true }))
+      .rejects.toMatchObject({ name: 'RelaySessionError', code: 'viewOnly' });
+    expect(w.peerForwards.length).toBe(sent);
+    // A command that needs no control still goes out while view-only.
+    await w.session.sendCommand({ type: 'quality', preset: 'speed' }, { requiresControl: false });
+    expect(w.peerForwards.slice(sent).map((f) => [f.formatFlag, text(f.payload)])).toEqual([
+      [false, '32|||2'], [false, '31|||30'],
+    ]);
+
+    w.peer!.deliver(fromPartner(encodeMultipart([u8(49), u8(0)])));
+    await waitFor(() => inputPermissions(w).length === 2);
+    await w.session.sendCommand({ type: 'action', action: 'ctrlAltDel' }, { requiresControl: true });
+    expect(w.peerForwards.at(-1)).toEqual({ formatFlag: true, payload: unicode('22') });
+    await w.session.sendCommand({ type: 'wallpaper', visible: false }, { requiresControl: true });
+    expect(w.peerForwards.at(-1)).toEqual({ formatFlag: true, payload: unicode('23|||0') });
+    w.session.close();
+  });
+
+  test('(c) after accepted the peer receives "28|||1" (cursor positions on) right after "17"', async () => {
+    const w = await activeWorld();
+    expect(w.peerTexts.slice(1, 3)).toEqual(['17', '28|||1']);
+    const cursorOn = w.peerForwards.find((f) => text(f.payload) === '28|||1');
+    expect(cursorOn?.formatFlag).toBe(false);
+  });
+
+  test('(d) commands 3/4/28 while active → cursor events; ignored hash and malformed messages are dropped', async () => {
+    const w = await activeWorld();
+    const cur = u8(0, 0, 2, 0, 1, 0, 32, 32, 0, 0, 3, 0, 5, 0, 4, 0, 0, 0, 22, 0, 0, 0, 0xaa, 0xbb, 0xcc, 0xdd);
+    w.peer!.deliver(fromPartner(encodeMultipart([u8(3), screenLong(0xb84d1a70 | 0)]))); // ignored hash
+    w.peer!.deliver(fromPartner(encodeMultipart([u8(3), screenLong(-12345)])));
+    w.peer!.deliver(fromPartner(encodeMultipart([u8(28), u8(0x2c, 0x01), u8(0xf6, 0xff)])));
+    w.peer!.deliver(fromPartner(encodeMultipart([u8(28), u8(1)]))); // malformed: dropped, session stays
+    w.peer!.deliver(fromPartner(encodeMultipart([u8(4), screenLong(-7), screenLong(cur.length), rawScreenZstd(cur)])));
+    w.peer!.deliver(fromPartner(encodeMultipart([u8(4), screenLong(-8), screenLong(cur.length), u8(1, 2, 3)]))); // bad zstd
+    w.peer!.deliver(fromPartner(encodeMultipart([u8(28), u8(0, 0), u8(0, 0)])));
+    await waitFor(() => cursorEvents(w).length === 4);
+    expect(cursorEvents(w)).toEqual([
+      { type: 'select', hash: -12345 },
+      { type: 'position', x: 300, y: -10 },
+      { type: 'shape', hash: -7, cur },
+      { type: 'position', x: 0, y: 0 },
+    ]);
+    expect(w.statuses().some((s) => /^ignored (3|4|28)$/.test(s))).toBe(false);
+    expect(w.closedEvent()).toBeUndefined();
+    // The session never caches or requests shapes itself: the UI asks with send(cursorShapeRequest).
+    expect(w.peerTexts.some((t) => t.startsWith('4|||'))).toBe(false);
+    await w.session.send(cursorShapeRequest(-12345));
+    expect(w.peerForwards.at(-1)).toEqual({ formatFlag: false, payload: enc('4|||-12345') });
+  });
+
+  test('(d) cursor messages before active are dropped', async () => {
+    const w = new World({ initParts: null, sendFrameAfter17: false });
+    w.connect();
+    await waitFor(() => logins(w).length === 1);
+    w.peer!.deliver(fromPartner(encodeMultipart([u8(28), u8(1, 0), u8(2, 0)])));
+    w.peer!.deliver(fromPartner(encodeMultipart(INIT_PARTS())));
+    await waitFor(() => w.session.phase === 'active');
+    expect(cursorEvents(w)).toEqual([]);
+    w.session.close();
+  });
+
+  test('(e) command 23 while active → login again with controlMode -1, renderer kept, back to active', async () => {
+    const w = await activeWorld();
+    const renderer = () => (w.session as unknown as { renderer: unknown }).renderer;
+    const before = renderer();
+    w.peer!.deliver(fromPartner(encodeMultipart([u8(23)])));
+    await waitFor(() => logins(w).length === 2);
+    const relogin = logins(w)[1]!.split(':');
+    expect(relogin[12]).toBe('-1'); // controlMode -1, clearControlMode false
+    expect(relogin[15]).toBe(logins(w)[0]!.split(':')[15]); // same connection hash
+    await waitFor(() => w.session.phase === 'active' && w.peerTexts.filter((t) => t === '17').length === 2);
+    expect(renderer()).toBe(before); // same geometry: the renderer is not re-created
+    expect(w.statuses().some((s) => s.startsWith('ignored 23'))).toBe(false);
+    expect(w.closedEvent()).toBeUndefined();
+  });
+
+  test('(e) command 23 before active is ignored (no second login)', async () => {
+    const w = new World({ initParts: null, sendFrameAfter17: false });
+    w.connect();
+    await waitFor(() => logins(w).length === 1);
+    w.peer!.deliver(fromPartner(encodeMultipart([u8(23)])));
+    w.peer!.deliver(fromPartner(encodeMultipart(INIT_PARTS())));
+    await waitFor(() => w.session.phase === 'active');
+    expect(logins(w)).toHaveLength(1);
+    w.session.close();
+  });
+
+  test('(e) a re-login the host never answers closes with deadline after 20 s', async () => {
+    useFakeClock();
+    const w = new World({ sendFrameAfter17: false });
+    w.connect();
+    await settle(() => w.session.phase === 'active');
+    w.peer!.onFrame = () => {}; // the host stops answering
+    w.peer!.deliver(fromPartner(encodeMultipart([u8(23)])));
+    await settle(() => w.session.phase === 'login');
+    await vi.advanceTimersByTimeAsync(19_900);
+    expect(w.closedEvent()).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(200);
+    expect(w.events.at(-1)).toEqual({ type: 'closed', reason: 'deadline' });
+  });
+
+  test('(f) send / sendCommand / refreshScreen before active → reject notConnected', async () => {
+    const w = new World({ initParts: null });
+    await expect(w.session.send(enc('8|||x'))).rejects.toMatchObject({ code: 'notConnected' });
+    w.connect();
+    await waitFor(() => logins(w).length === 1);
+    await expect(w.session.send(enc('8|||x'))).rejects.toMatchObject({ name: 'RelaySessionError', code: 'notConnected' });
+    await expect(w.session.sendCommand({ type: 'action', action: 'lock' }, { requiresControl: false }))
+      .rejects.toMatchObject({ code: 'notConnected' });
+    await expect(w.session.refreshScreen()).rejects.toMatchObject({ code: 'notConnected' });
+    expect(logins(w)).toHaveLength(1);
+    w.session.close();
+    await expect(w.session.send(enc('8|||x'))).rejects.toMatchObject({ code: 'notConnected' });
+  });
+
+  test('refreshScreen: inputPermission(false) first, clear-mode login, send still works for releaseAll', async () => {
+    const w = new World({ sendFrameAfter17: false, initParts: null });
+    w.connect();
+    await waitFor(() => logins(w).length === 1);
+    w.peer!.deliver(fromPartner(encodeMultipart(INIT_PARTS())));
+    await waitFor(() => w.session.phase === 'active');
+    const order: string[] = [];
+    const seen = w.events.length;
+    await w.session.refreshScreen();
+    for (const e of w.events.slice(seen)) order.push(e.type);
+    expect(order[0]).toBe('inputPermission');
+    expect(w.events[seen]).toEqual({ type: 'inputPermission', allowed: false });
+    expect(w.session.phase).toBe('login');
+    expect(logins(w)).toHaveLength(2);
+    expect(logins(w)[1]!.split(':')[12]).toBe('0'); // clearControlMode
+    // Held keys can still be released during the authenticated refresh (Swift send()).
+    await w.session.send(u8(30, 0x7c, 0x7c, 0x7c, 2, 0x41, 0x1e, 0, 0x61, 0, 0));
+    expect(w.peerForwards.at(-1)?.payload[0]).toBe(30);
+    w.peer!.deliver(fromPartner(encodeMultipart(INIT_PARTS())));
+    await waitFor(() => w.session.phase === 'active');
+    expect(w.session.diagnostics.screenRefreshes).toBe(1);
+    w.session.close();
+  });
+
+  test('accepted peer: binary keyboard from 6.2.13, monitors from init part 8, virtual origin from parts 9/10', async () => {
+    const parts = [...INIT_PARTS('6.2.12'), enc('-1:0:1:1|'), screenLong(-1), screenLong(0)];
+    const w = await activeWorld({ initParts: parts });
+    const accepted = w.events.find((e) => e.type === 'accepted');
+    expect(accepted?.type === 'accepted' && accepted.peer).toMatchObject({
+      version: '6.2.12', supportsBinaryKeyboard: false, allowsRemoteInput: true,
+      monitors: [{ index: 1, left: -1, top: 0, right: 1, bottom: 1 }], virtualLeft: -1, virtualTop: 0,
+    });
+
+    const bad = await activeWorld({ initParts: [...INIT_PARTS('6.2.13'), enc('garbage'), screenLong(0), screenLong(0)] });
+    const peer = bad.events.find((e) => e.type === 'accepted');
+    expect(peer?.type === 'accepted' && peer.peer).toMatchObject({ supportsBinaryKeyboard: true, monitors: [] });
+    expect(bad.statuses().filter((s) => s.startsWith('monitor'))).toHaveLength(1);
   });
 });

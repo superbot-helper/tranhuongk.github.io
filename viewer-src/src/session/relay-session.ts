@@ -5,8 +5,11 @@
 //
 // Phase 0 scope: registering -> lookup -> login -> active (initialization + screen frames,
 // tile-size change 48), partner end/block (27/41/54, 39), heartbeats, deadline and close
-// handling. No LAN direct, files, chat, clipboard, audio or cursor: every other application
-// id is logged once as `ignored <id>` and dropped.
+// handling. Phase 1 adds the control API (send 217-224, sendCommand 261-265, refreshScreen
+// 226-238), cursor 3/4/28 (716-718), host re-login 23 (828-832) and input permission 49
+// (848-853); pure helpers live in ./control. No LAN direct, files, chat, clipboard or audio:
+// every other application id (including 26, no relay retargeting) is logged once as
+// `ignored <id>` and dropped.
 //
 // Web additions (no Swift equivalent): the command host is resolved over DoH and its IPv4
 // addresses are tried in order (RelayCommandConnection, 3 s each); a liveness watchdog
@@ -21,6 +24,8 @@ import { DnsError } from '../net/dns';
 import { PipeError } from '../net/pipe';
 import { TlsError, type ByteChannel } from '../net/tls';
 import { loadScreenDictionary } from '../codec/screen-dictionary';
+import { commandPayload, type RemoteCommand, type RemoteMonitor } from '../proto/commands';
+import { makeCursorZstd, type CursorEvent, type CursorZstd } from '../proto/cursor';
 import { CLIENT_VERSION, LOGIN_DEFAULTS, LOOKUP_DEFAULTS, makeRegistrationRequest } from '../proto/client-defaults';
 import { commandCipher } from '../proto/crypto';
 import {
@@ -34,7 +39,10 @@ import { decodeMultipart } from '../proto/multipart';
 import { parseRegistrationReply, registrationEnvelope, type RegistrationReply } from '../proto/registration';
 import { decodeFrameMessage, decodeInitialization, ModernScreenMessageError } from '../proto/screen-message';
 import { ModernScreenRenderer, type JpegDecoder, type ScreenBitmap } from '../proto/screen-renderer';
+import { BINARY_KEYBOARD_VERSION, decodeCursor, initMonitors, versionAtLeast, viewOnlyFlag } from './control';
 import type { ClientIdentity } from './identity';
+
+export { versionAtLeast } from './control';
 
 export const COMMAND_HOST = 'functions3.ultraviewer.net';
 const SNI = 'ultraviewer';
@@ -66,6 +74,12 @@ export interface Peer {
   height: number;
   virtualLeft: number;
   virtualTop: number;
+  /** Version >= 6.2.13: binary keyboard packets are understood. */
+  supportsBinaryKeyboard: boolean;
+  /** False when the host announced view-only (49 flag != 0) before this initialization. */
+  allowsRemoteInput: boolean;
+  /** Init part 8; [] when absent or malformed (logged once). */
+  monitors: RemoteMonitor[];
 }
 
 /**
@@ -85,6 +99,10 @@ export type SessionEvent =
   | { type: 'accepted'; peer: Peer }
   /** The renderer's live bitmap: draw it (or snapshot it) before the next frame is decoded. */
   | { type: 'frame'; bitmap: ScreenBitmap }
+  /** Command 49 while active, and `false` when a screen refresh suspends control. */
+  | { type: 'inputPermission'; allowed: boolean }
+  /** Commands 3/4/28 while active. A `select` of an unknown hash: send(cursorShapeRequest(hash)). */
+  | { type: 'cursor'; event: CursorEvent }
   | { type: 'closed'; reason: SessionFailure | null };
 
 export type SessionPhase = 'closed' | 'registering' | 'lookup' | 'login' | 'active';
@@ -103,6 +121,8 @@ export interface RelaySessionDeps {
   loadDictionary?: () => Promise<Uint8Array | null>;
   /** Defaults to the browser JPEG decoder. */
   decodeJpeg?: JpegDecoder;
+  /** Defaults to a dictionary-free zstd decoder for cursor shapes (created on the first command 4). */
+  makeCursorZstd?: () => Promise<CursorZstd>;
 }
 
 export interface ConnectOptions {
@@ -147,8 +167,9 @@ function freshDiagnostics(): SessionDiagnostics {
   };
 }
 
+/** Swift Failure cases thrown by the public API (connect / send / sendCommand / refreshScreen). */
 export class RelaySessionError extends Error {
-  readonly code: 'alreadyOpen' | 'invalidPartner';
+  readonly code: 'alreadyOpen' | 'invalidPartner' | 'notConnected' | 'viewOnly';
   constructor(code: RelaySessionError['code']) {
     super(code);
     this.name = 'RelaySessionError';
@@ -254,17 +275,6 @@ function randomCorrelation(): number {
   }
 }
 
-/** Swift `version(_:atLeast:)`: exactly three non-negative integer fields, compared in order. */
-export function versionAtLeast(text: string, required: [number, number, number]): boolean {
-  const fields = text.split('.');
-  if (fields.length !== 3 || !fields.every((f) => /^\+?[0-9]+$/.test(f))) return false;
-  const values = fields.map(Number);
-  for (let i = 0; i < 3; i++) {
-    if (values[i]! !== required[i]) return values[i]! > required[i]!;
-  }
-  return true;
-}
-
 function decodeComputerName(field: string): string | null {
   try {
     const binary = atob(field);
@@ -346,6 +356,10 @@ export class RelaySession {
   private correlation = 0;
   private renderer: ModernScreenRenderer | null = null;
   private dictionary: Promise<Uint8Array | null> | null = null;
+  private cursorZstd: Promise<CursorZstd> | null = null;
+  /** Swift remoteViewOnly: the last command 49 flag (any phase); reset per connection. */
+  private remoteViewOnly = false;
+  private monitorErrorLogged = false;
   private readonly ignoredIDs = new Set<number>();
   private readonly foreignSources = new Set<string>();
   private diag: SessionDiagnostics = freshDiagnostics();
@@ -375,6 +389,8 @@ export class RelaySession {
     this.ignoredIDs.clear();
     this.foreignSources.clear();
     this.heartbeatTicks = 0;
+    this.remoteViewOnly = false;
+    this.monitorErrorLogged = false;
     this.relayAnswersPings = false;
     this.relayPingStarted = null;
     this.peerPingStarted = null;
@@ -382,6 +398,31 @@ export class RelaySession {
     this.peerQueue = Promise.resolve();
     this.state = 'registering';
     void this.begin(gen).catch((e: unknown) => this.fail(e, gen));
+  }
+
+  /**
+   * Swift send(_:): raw application payload (input packets, cursorShapeRequest). Allowed once
+   * accepted while active or during an authenticated re-login/refresh, so held input can still
+   * be released after control was suspended.
+   */
+  async send(bytes: Uint8Array, formatFlag = false): Promise<void> {
+    if (!this.diag.peerAccepted || (this.state !== 'active' && this.state !== 'login') || this.peer === null) {
+      throw new RelaySessionError('notConnected');
+    }
+    this.sendToPeer(bytes, formatFlag);
+  }
+
+  /** Swift sendCommand: active only; `requiresControl` commands are refused while view-only. */
+  async sendCommand(c: RemoteCommand, opts: { requiresControl: boolean }): Promise<void> {
+    if (this.state !== 'active' || this.peer === null) throw new RelaySessionError('notConnected');
+    if (opts.requiresControl && this.remoteViewOnly) throw new RelaySessionError('viewOnly');
+    for (const m of commandPayload(c)) this.sendToPeer(m.bytes, m.formatFlag);
+  }
+
+  /** Swift refreshScreen: renegotiate a complete screen; control is suspended until the init. */
+  async refreshScreen(): Promise<void> {
+    if (this.state !== 'active') throw new RelaySessionError('notConnected');
+    this.renegotiateScreen(this.generation);
   }
 
   /** Tells an active host that this viewer is leaving ("19", RemoteControlCommands.endSession), then closes. */
@@ -652,6 +693,26 @@ export class RelaySession {
         throw new Failure('partnerEnded', `Windows đã kết thúc phiên (lệnh ${command})`);
       case 39:
         throw new Failure('partnerBlocked', 'Windows đã chặn kết nối này (lệnh 39)');
+      case 3:
+      case 4:
+      case 28:
+        await this.consumeCursor(parts, gen);
+        return;
+      case 23:
+        // Swift 828-832: the host asks for a new Login; the screen stays (no clear).
+        if (this.state !== 'active') return;
+        this.state = 'login';
+        this.status('Windows yêu cầu đăng nhập lại (lệnh 23)…');
+        this.armDeadline(gen);
+        this.login(-1, false);
+        return;
+      case 49: {
+        const viewOnly = viewOnlyFlag(parts);
+        if (viewOnly === null) throw new Failure('protocol', 'lệnh 49 thiếu cờ quyền điều khiển (malformedInitialization)');
+        this.remoteViewOnly = viewOnly;
+        if (this.state === 'active') this.on({ type: 'inputPermission', allowed: !viewOnly });
+        return;
+      }
       case 48:
         if (this.state === 'active' && this.renderer !== null) {
           this.renderer.setTileSize(parts);
@@ -706,6 +767,11 @@ export class RelaySession {
     const previouslyAccepted = this.diag.peerAccepted;
     this.diag.peerAccepted = true;
     this.startHeartbeat(gen);
+    const { monitors, error: monitorError } = initMonitors(init);
+    if (monitorError !== null && !this.monitorErrorLogged) {
+      this.monitorErrorLogged = true;
+      this.status(`monitor: bỏ qua thông tin màn hình lỗi (${monitorError})`);
+    }
     const peer: Peer = {
       displayName: this.peerInfo ? decodeComputerName(this.peerInfo.computerNameField) : null,
       version,
@@ -713,6 +779,9 @@ export class RelaySession {
       height: init.height,
       virtualLeft: init.virtualLeft ?? 0,
       virtualTop: init.virtualTop ?? 0,
+      supportsBinaryKeyboard: versionAtLeast(version, BINARY_KEYBOARD_VERSION),
+      allowsRemoteInput: !this.remoteViewOnly,
+      monitors,
     };
     this.status(`init ${init.width}×${init.height}, Windows UltraViewer ${version}, tile ${init.tileSize}`);
     this.on({ type: 'accepted', peer });
@@ -720,6 +789,27 @@ export class RelaySession {
     if (!this.live(gen) || this.state !== 'active') return;
     // TCP ConnectionType1: the viewer sends ASCII 17 after initialization.
     this.sendToPeer(ASCII.encode('17'));
+    // MacViewer ConnectionModel sends cursorPositions(enabled:) once, on the first accept.
+    if (!previouslyAccepted) this.sendToPeer(ASCII.encode('28|||1'));
+  }
+
+  /** consumeApplication cases 3, 4, 28 (active only; malformed or ignored-hash messages dropped). */
+  private async consumeCursor(parts: Uint8Array[], gen: number): Promise<void> {
+    if (this.state !== 'active') return;
+    const event = await decodeCursor(parts, () => this.loadCursorZstd());
+    if (event === null || !this.live(gen) || this.state !== 'active') return;
+    this.on({ type: 'cursor', event });
+  }
+
+  private loadCursorZstd(): Promise<CursorZstd> {
+    if (this.cursorZstd === null) {
+      const p = (this.deps.makeCursorZstd ?? makeCursorZstd)();
+      this.cursorZstd = p;
+      p.catch((e: unknown) => {
+        if (this.state !== 'closed') this.status(`Không tải được zstd cho con trỏ: ${describe(e)}`);
+      });
+    }
+    return this.cursorZstd;
   }
 
   /** consumeApplication case 1. */
@@ -749,17 +839,19 @@ export class RelaySession {
       this.sendToPeer(ASCII.encode('18'));
       // Never continue a damaged tile cache: a full initialization resets decoder and cache.
       if (this.diag.screenRefreshes >= 2) throw new Failure('protocol', `màn hình lỗi lặp lại: ${e.message}`);
-      this.refreshScreen(gen);
+      this.renegotiateScreen(gen);
     }
   }
 
   /** Swift refreshScreen: clear-mode Login renegotiates a complete screen. */
-  private refreshScreen(gen: number): void {
+  private renegotiateScreen(gen: number): void {
     if (this.state !== 'active') return;
     this.diag.screenRefreshes++;
     this.renderer?.dispose();
     this.renderer = null;
     this.state = 'login';
+    this.on({ type: 'inputPermission', allowed: false });
+    if (!this.live(gen) || this.state !== 'login') return;
     this.status('Đang làm mới màn hình Windows…');
     this.armDeadline(gen);
     this.login(-1, true);
