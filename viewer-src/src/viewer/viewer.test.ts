@@ -443,16 +443,21 @@ describe('desktop viewer page', () => {
     ]);
   });
 
-  test('macOS Option+p types "π": Alt is lifted under a Ctrl tap first, then the character', async () => {
+  /** Remounts the page as on macOS (Option types characters) and connects. */
+  function mountMac(): void {
     viewer.destroy();
     Object.defineProperty(navigator, 'platform', { configurable: true, get: () => 'MacIntel' });
+    document.body.innerHTML = '<main id="app"></main>';
+    app = document.getElementById('app')!;
+    viewer = mountViewer(app, { createSession: () => session, workerUrl: 'ws://127.0.0.1:8787', schedule: (cb) => cb() });
+    canvas = $<HTMLCanvasElement>('#screen');
+    textarea = $<HTMLTextAreaElement>('#keyboard-input');
+    connect();
+  }
+
+  test('macOS Option+p types "π": Alt is lifted under a Ctrl tap first, then the character', async () => {
     try {
-      document.body.innerHTML = '<main id="app"></main>';
-      app = document.getElementById('app')!;
-      viewer = mountViewer(app, { createSession: () => session, workerUrl: 'ws://127.0.0.1:8787', schedule: (cb) => cb() });
-      canvas = $<HTMLCanvasElement>('#screen');
-      textarea = $<HTMLTextAreaElement>('#keyboard-input');
-      connect();
+      mountMac();
       keyEvent('keydown', key('AltLeft', 'Alt', { altKey: true }));
       const down = keyEvent('keydown', key('KeyP', 'π', { altKey: true }));
       keyEvent('keyup', key('KeyP', 'π', { altKey: true }));
@@ -464,6 +469,36 @@ describe('desktop viewer page', () => {
         packet(3, 0xa2, 0x1d), packet(4, 0xa2, 0x1d), packet(4, 0xa4, 0x38),
         ...vkPacketText('π'),
       ]);
+    } finally {
+      delete (navigator as unknown as Record<string, unknown>).platform;
+    }
+  });
+
+  test('a text key whose keyup macOS swallowed under Cmd does not swallow a later plain keyup', async () => {
+    try {
+      mountMac();
+      keyEvent('keydown', key('AltLeft', 'Alt', { altKey: true }));
+      keyEvent('keydown', key('KeyP', 'π', { altKey: true }));
+      keyEvent('keyup', key('AltLeft', 'Alt'));
+      keyEvent('keydown', key('MetaLeft', 'Meta', { metaKey: true }));
+      // P released while Cmd is down: macOS sends no keyup for it.
+      keyEvent('keyup', key('MetaLeft', 'Meta'));
+      await settle();
+      const n = session.sent.length;
+      keyEvent('keydown', key('KeyP', 'p'));
+      keyEvent('keyup', key('KeyP', 'p'));
+      await settle();
+      expect(sentSince(n)).toEqual([packet(1, 0x50, 0x19, 0x70), packet(2, 0x50, 0x19, 0x70)]);
+      // Without Cmd in between: a new VK keydown of the same key also ends the text press.
+      keyEvent('keydown', key('AltLeft', 'Alt', { altKey: true }));
+      keyEvent('keydown', key('KeyP', 'π', { altKey: true }));
+      keyEvent('keyup', key('AltLeft', 'Alt'));
+      await settle();
+      const m = session.sent.length;
+      keyEvent('keydown', key('KeyP', 'p'));
+      keyEvent('keyup', key('KeyP', 'p'));
+      await settle();
+      expect(sentSince(m)).toEqual([packet(1, 0x50, 0x19, 0x70), packet(2, 0x50, 0x19, 0x70)]);
     } finally {
       delete (navigator as unknown as Record<string, unknown>).platform;
     }

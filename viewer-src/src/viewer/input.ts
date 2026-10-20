@@ -273,7 +273,11 @@ export class DesktopInput {
     this.capsLock = e.getModifierState?.('CapsLock') ?? this.capsLock;
     if (!this.keyboardActive()) return;
     if (codeToKey(e.code) !== null) e.preventDefault();
-    if (!down && this.textKeys.delete(e.code)) return;
+    // A new keydown ends an earlier text press of the same key; macOS drops keyups of keys released
+    // under Cmd (the encoder releases them on Meta up), so Meta up forgets every text press too.
+    if (down) this.textKeys.delete(e.code);
+    else if (this.textKeys.delete(e.code)) return;
+    else if (e.code === 'MetaLeft' || e.code === 'MetaRight') this.textKeys.clear();
     const input: KeyInput = {
       code: e.code,
       key: e.key,

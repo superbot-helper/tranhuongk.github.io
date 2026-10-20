@@ -280,6 +280,15 @@ describe('attachTextInput (text: IME, soft keyboards)', () => {
     expect(log).toEqual(['text:a']);
   });
 
+  test('NumpadComma (ABNT2/JIS, no VK in the keymap) types "," as text exactly once', () => {
+    const down = keydown({ code: 'NumpadComma', key: ',' });
+    typeInput('insertText', ',');
+    keyup({ code: 'NumpadComma', key: ',' });
+    expect(down.defaultPrevented).toBe(true);
+    expect(log.filter((l) => l.startsWith('text:'))).toEqual(['text:,']);
+    expect(log).not.toContain('key:NumpadComma:down');
+  });
+
   test('shortcuts stay on the VK path whatever character they produce', () => {
     keydown({ code: 'KeyC', key: 'с', ctrlKey: true }); // Russian layout Ctrl+C
     keydown({ code: 'KeyV', key: 'v', metaKey: true });

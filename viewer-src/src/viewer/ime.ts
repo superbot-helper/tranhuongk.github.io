@@ -13,6 +13,8 @@
 // A keyup is always routed so a held key can always be released. The textarea is emptied after every
 // commit so later beforeinput data is a clean delta.
 
+import { codeToKey } from '../input/keymap';
+
 export interface TextInputHandlers {
   /** A physical key went down (`down`) or up. The handler decides preventDefault. */
   key(e: KeyboardEvent, down: boolean): void;
@@ -54,11 +56,11 @@ const US_KEYS: Record<string, string> = {
   Digit9: '9(', Digit0: '0)', Minus: '-_', Equal: '=+', BracketLeft: '[{', BracketRight: ']}', Backslash: '\\|',
   Semicolon: ';:', Quote: '\'"', Backquote: '`~', Comma: ',<', Period: '.>', Slash: '/?', Space: ' ',
   NumpadDecimal: '.', NumpadMultiply: '*', NumpadAdd: '+', NumpadSubtract: '-', NumpadDivide: '/', NumpadEqual: '=',
-  NumpadComma: ',',
 };
 
-/** The ASCII character is what this physical key types on a US layout (the host maps VKs as US). */
+/** The ASCII character is what this mapped physical key types on a US layout (the host maps VKs as US). */
 function matchesPhysicalKey(code: string, ch: string): boolean {
+  if (codeToKey(code) === null) return false; // no VK to send: the character must go as text
   const letter = /^Key([A-Z])$/.exec(code);
   if (letter) return ch.toUpperCase() === letter[1];
   const numpad = /^Numpad([0-9])$/.exec(code);
