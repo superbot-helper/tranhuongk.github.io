@@ -377,7 +377,7 @@ describe('RelaySession', () => {
     expect(w.peer!.closed).toBe(true);
   });
 
-  test('silent relay while active (no bytes for 18 s after pongs were seen) → closed(transportClosed) ≤ 20 s', async () => {
+  test('normal cadence, dead channel (ping unanswered) → closed(transportClosed) ≤ 20 s after the last byte', async () => {
     useFakeClock();
     const w = new World({ sendFrameAfter17: false });
     w.connect();
@@ -392,6 +392,75 @@ describe('RelaySession', () => {
     expect(w.events.at(-1)).toEqual({ type: 'closed', reason: 'transportClosed' });
     expect(Date.now() - silentFrom).toBeLessThanOrEqual(20_000);
   }, 15_000);
+
+  test('late watchdog tick after a 60 s throttling gap, live channel → pings first and stays active', async () => {
+    useFakeClock();
+    const w = new World({ sendFrameAfter17: false });
+    w.connect();
+    await settle(() => w.session.phase === 'active');
+    await vi.advanceTimersByTimeAsync(10_000); // ping -> pong: the relay answers pings
+    const pingsBefore = w.peerSystem.length;
+    // Hidden tab, intensive throttling: the clock moves 60 s while no timer runs.
+    vi.setSystemTime(Date.now() + 60_000);
+    await vi.advanceTimersByTimeAsync(1_000); // the first (late) tick
+    expect(w.peerSystem.length).toBeGreaterThan(pingsBefore); // a fresh probe went out
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(w.closedEvent()).toBeUndefined();
+    expect(w.session.phase).toBe('active');
+    w.session.close();
+  }, 15_000);
+
+  test('late watchdog tick, dead channel → closed(transportClosed) within 20 s of the late tick, not at once', async () => {
+    useFakeClock();
+    const w = new World({ sendFrameAfter17: false });
+    w.connect();
+    await settle(() => w.session.phase === 'active');
+    await vi.advanceTimersByTimeAsync(10_000);
+    w.peer!.onFrame = () => {}; // dead: nothing will ever answer
+    vi.setSystemTime(Date.now() + 60_000);
+    await vi.advanceTimersByTimeAsync(1_000);
+    const lateTickAt = Date.now();
+    expect(w.closedEvent()).toBeUndefined();
+    while (!w.closedEvent() && Date.now() - lateTickAt < 25_000) await vi.advanceTimersByTimeAsync(500);
+    expect(w.events.at(-1)).toEqual({ type: 'closed', reason: 'transportClosed' });
+    expect(Date.now() - lateTickAt).toBeLessThanOrEqual(20_000);
+  }, 15_000);
+
+  test.each([
+    [27, 'partnerEnded'],
+    [41, 'partnerEnded'],
+    [54, 'partnerEnded'],
+    [39, 'partnerBlocked'],
+  ])('partner command %i → closed(%s), both channels closed, timers cleared', async (id, reason) => {
+    useFakeClock();
+    const w = new World({ sendFrameAfter17: false });
+    w.connect();
+    await settle(() => w.session.phase === 'active');
+    w.peer!.deliver(fromPartner(encodeMultipart([u8(id)])));
+    await settle(() => w.closedEvent());
+    expect(w.events.at(-1)).toEqual({ type: 'closed', reason });
+    expect(w.command!.closed && w.peer!.closed).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+    const sent = w.peerSystem.length + w.peerTexts.length;
+    await vi.advanceTimersByTimeAsync(70_000);
+    expect(w.peerSystem.length + w.peerTexts.length).toBe(sent);
+    expect(w.events.filter((e) => e.type === 'closed')).toHaveLength(1);
+  });
+
+  test('command 48 while active changes the renderer tile size; a malformed 48 closes with protocol', async () => {
+    const w = new World({ sendFrameAfter17: false });
+    w.connect();
+    await waitFor(() => w.session.phase === 'active');
+    const renderer = () => (w.session as unknown as { renderer: { tileSize: number } | null }).renderer;
+    expect(renderer()!.tileSize).toBe(16);
+    w.peer!.deliver(fromPartner(encodeMultipart([u8(48), u8(32)])));
+    await waitFor(() => renderer()!.tileSize === 32);
+    expect(w.statuses().some((s) => s.startsWith('ignored 48'))).toBe(false);
+    expect(w.closedEvent()).toBeUndefined();
+    w.peer!.deliver(fromPartner(encodeMultipart([u8(48)])));
+    await waitFor(() => w.closedEvent());
+    expect(w.events.at(-1)).toEqual({ type: 'closed', reason: 'protocol' });
+  });
 
   test('heartbeats: relay "ping" + peer "20" every 10 s, encrypted command "2" every 60 s', async () => {
     useFakeClock();
@@ -442,11 +511,11 @@ describe('RelaySession', () => {
     await waitFor(() => w.session.phase === 'active');
     w.peer!.deliver(fromPartner(encodeMultipart([u8(28), u8(1, 2, 3)])));
     w.peer!.deliver(fromPartner(encodeMultipart([u8(28), u8(4)])));
-    w.peer!.deliver(fromPartner(encodeMultipart([u8(27)])));
+    w.peer!.deliver(fromPartner(encodeMultipart([u8(23)])));
     w.peer!.deliver(fromPartner(encodeMultipart([u8(1)]), '192.0.2.200', 1));
     await waitFor(() => w.session.diagnostics.ignoredSources === 1);
     const ignored = w.statuses().filter((s) => s.startsWith('ignored'));
-    expect(ignored).toEqual(['ignored 28', 'ignored 27']);
+    expect(ignored).toEqual(['ignored 28', 'ignored 23']);
     expect(w.session.diagnostics.ignoredMessages).toBe(3);
     expect(w.closedEvent()).toBeUndefined();
   });

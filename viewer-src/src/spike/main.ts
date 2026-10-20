@@ -24,6 +24,8 @@ const REASONS: Record<SessionFailure, string> = {
   tls: 'Lỗi TLS / chứng chỉ relay.',
   workerRefused: 'Worker từ chối kết nối (mã trong log; 4401 = token sai).',
   protocol: 'Dữ liệu nhận được không hợp lệ (chi tiết trong log).',
+  partnerEnded: 'Máy Windows đã kết thúc phiên.',
+  partnerBlocked: 'Máy Windows đã chặn kết nối này.',
 };
 
 function readStorage(get: () => Storage, key: string): string | null {

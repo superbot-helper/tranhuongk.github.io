@@ -3,14 +3,17 @@
 // consumePeer / consumeApplication cases 0 and 1 (638-830), sendToPeer (861-874),
 // armDeadline (876-885), sendHeartbeat (887-920), finish.
 //
-// Phase 0 scope: registering -> lookup -> login -> active (initialization + screen frames),
-// heartbeats, deadline and close handling. No LAN direct, files, chat, clipboard, audio or
-// cursor: every other application id is logged once as `ignored <id>` and dropped.
+// Phase 0 scope: registering -> lookup -> login -> active (initialization + screen frames,
+// tile-size change 48), partner end/block (27/41/54, 39), heartbeats, deadline and close
+// handling. No LAN direct, files, chat, clipboard, audio or cursor: every other application
+// id is logged once as `ignored <id>` and dropped.
 //
 // Web additions (no Swift equivalent): the command host is resolved over DoH and its IPv4
-// addresses are tried in order (RelayCommandConnection, 3 s each); a silent-connection
-// watchdog closes an active session after 18 s without inbound bytes once the relay has
-// proven it answers pings (phone lock / dropped WebSocket without a close event).
+// addresses are tried in order (RelayCommandConnection, 3 s each); a liveness watchdog
+// closes an active session when a ping stays unanswered (no inbound byte at all) for 8 s,
+// once the relay has proven it answers pings (phone lock / dropped WebSocket without a
+// close event). It never judges across a timer-throttling gap: a late tick sends a fresh
+// ping and starts the 8 s window from then.
 //
 // Secrets: the partner password, its MD5 proofs, the client password and the Worker token
 // never appear in a status string or an error detail.
@@ -44,9 +47,11 @@ export const PHASE_DEADLINE_MS = 20_000;
 export const HEARTBEAT_MS = 10_000;
 /** frmMain.tmPingServer: the command keepalive goes out every 6th heartbeat (60 s). */
 const COMMAND_KEEPALIVE_EVERY = 6;
-/** Web watchdog: silence that counts as a dead connection; checked every second. */
-export const SILENCE_LIMIT_MS = 18_000;
+/** Web watchdog: a ping with no inbound byte since it was sent for this long = dead. */
+export const PROBE_TIMEOUT_MS = 8_000;
 const WATCHDOG_TICK_MS = 1_000;
+/** A watchdog tick this late means timers were throttled (hidden tab): re-probe, do not judge. */
+const LATE_TICK_MS = 3_000;
 
 export interface Peer {
   /** Base64-decoded lookup field 8, when it decodes as UTF-8. */
@@ -64,7 +69,11 @@ export interface Peer {
  */
 export type SessionFailure =
   | 'wrongPassword' | 'lookupRejected' | 'invalidLookupRoute' | 'unsupportedVersion' | 'deadline'
-  | 'transportClosed' | 'tls' | 'workerRefused' | 'protocol';
+  | 'transportClosed' | 'tls' | 'workerRefused' | 'protocol'
+  /** Commands 27/41/54: the Windows side ended the session (Swift Failure.closed). */
+  | 'partnerEnded'
+  /** Command 39: the Windows side blocked this connection (Swift Failure.partnerBlocked). */
+  | 'partnerBlocked';
 
 export type SessionEvent =
   | { type: 'status'; text: string }
@@ -293,6 +302,9 @@ export class RelaySession {
   private watchdog: ReturnType<typeof setInterval> | null = null;
   private heartbeatTicks = 0;
   private lastInboundAt = 0;
+  /** When the outstanding liveness ping went out; null when answered (any inbound byte since). */
+  private probeSentAt: number | null = null;
+  private lastWatchdogTickAt = 0;
   private relayAnswersPings = false;
   private relayPingStarted: number | null = null;
   private peerPingStarted: number | null = null;
@@ -584,6 +596,18 @@ export class RelaySession {
           this.peerPingStarted = null;
         }
         return;
+      case 27:
+      case 41:
+      case 54:
+        throw new Failure('partnerEnded', `Windows đã kết thúc phiên (lệnh ${command})`);
+      case 39:
+        throw new Failure('partnerBlocked', 'Windows đã chặn kết nối này (lệnh 39)');
+      case 48:
+        if (this.state === 'active' && this.renderer !== null) {
+          this.renderer.setTileSize(parts);
+          this.status(`tile size → ${this.renderer.tileSize}`);
+        }
+        return;
       default:
         this.diag.ignoredMessages++;
         if (!this.ignoredIDs.has(command)) {
@@ -707,23 +731,53 @@ export class RelaySession {
     if (this.heartbeat !== null) return;
     this.heartbeat = setInterval(() => this.sendHeartbeat(gen), HEARTBEAT_MS);
     this.lastInboundAt = this.deps.now();
-    this.watchdog = setInterval(() => {
-      if (!this.live(gen) || this.state !== 'active' || !this.relayAnswersPings) return;
-      const silent = this.deps.now() - this.lastInboundAt;
-      if (silent >= SILENCE_LIMIT_MS) {
-        this.fail(new Failure('transportClosed', `mất kết nối: không nhận được byte nào trong ${Math.round(silent / 1000)} s`), gen);
-      }
-    }, WATCHDOG_TICK_MS);
+    this.lastWatchdogTickAt = this.deps.now();
+    this.probeSentAt = null;
+    this.watchdog = setInterval(() => this.watchdogTick(gen), WATCHDOG_TICK_MS);
+  }
+
+  /**
+   * Judges only an unanswered ping, never wall-clock silence: under timer throttling (hidden
+   * tab, locked phone) ticks arrive late, so a late tick sends a fresh ping and restarts the
+   * window. A dead connection is reported <= PROBE_TIMEOUT_MS + 1 tick after a punctual ping,
+   * i.e. <= 19 s after the last byte at the normal 10 s cadence, ~9 s after the tab wakes up.
+   */
+  private watchdogTick(gen: number): void {
+    if (!this.live(gen) || this.state !== 'active') return;
+    const now = this.deps.now();
+    const late = now - this.lastWatchdogTickAt > LATE_TICK_MS;
+    this.lastWatchdogTickAt = now;
+    if (late) {
+      this.sendPing();
+      this.probeSentAt = now;
+      return;
+    }
+    if (this.probeSentAt === null) return;
+    if (this.lastInboundAt >= this.probeSentAt) {
+      this.probeSentAt = null;
+      return;
+    }
+    const waited = now - this.probeSentAt;
+    if (this.relayAnswersPings && waited >= PROBE_TIMEOUT_MS) {
+      this.fail(new Failure('transportClosed', `mất kết nối: ping không được trả lời sau ${Math.round(waited / 1000)} s`), gen);
+    }
+  }
+
+  /** Relay `ping` + peer `"20"`; starts a liveness probe unless one is already outstanding. */
+  private sendPing(): void {
+    const now = this.deps.now();
+    this.relayPingStarted = now;
+    this.peer?.send(keepaliveRelayEnvelope());
+    this.diag.relayKeepalivesSent++;
+    this.peerPingStarted = now;
+    this.sendToPeer(ASCII.encode('20'));
+    this.probeSentAt ??= now;
   }
 
   private sendHeartbeat(gen: number): void {
     if (!this.live(gen) || this.state !== 'active') return;
     this.heartbeatTicks++;
-    this.relayPingStarted = this.deps.now();
-    this.peer?.send(keepaliveRelayEnvelope());
-    this.diag.relayKeepalivesSent++;
-    this.peerPingStarted = this.deps.now();
-    this.sendToPeer(ASCII.encode('20'));
+    this.sendPing();
     if (this.heartbeatTicks % COMMAND_KEEPALIVE_EVERY === 0) {
       // frmMain.tmPingServer: encrypted ASCII 2, sixty-second interval.
       this.command?.send(keepaliveCommandEnvelope());
@@ -764,6 +818,7 @@ export class RelaySession {
     this.targetPort = 0;
     this.relayPingStarted = null;
     this.peerPingStarted = null;
+    this.probeSentAt = null;
     command?.channel.close();
     peer?.channel.close();
     this.on({ type: 'closed', reason });
