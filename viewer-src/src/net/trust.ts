@@ -3,6 +3,7 @@
 // FramedTCPTransport.verify: the chain must reach a bundled trust anchor and the leaf must
 // name `certName`; an expired (or not-yet-valid) certificate is accepted and only reported.
 import forge from 'node-forge';
+import { binaryToBytes, bytesToBinary } from './binary';
 import aaaPem from '../../fixtures/roots/aaa-certificate-services.pem?raw';
 import r46Pem from '../../fixtures/roots/sectigo-r46.pem?raw';
 import usertrustPem from '../../fixtures/roots/usertrust-rsa.pem?raw';
@@ -24,7 +25,7 @@ export function pemToDer(pem: string): Uint8Array[] {
   return forge.pem
     .decode(pem)
     .filter((m) => m.type === 'CERTIFICATE')
-    .map((m) => forge.util.binary.raw.decode(m.body));
+    .map((m) => binaryToBytes(m.body));
 }
 
 let anchorsCache: Uint8Array[] | null = null;
@@ -68,7 +69,7 @@ export function checkServerChainWith(
 
 function parse(der: Uint8Array): Parsed | null {
   try {
-    const raw = forge.util.binary.raw.encode(der);
+    const raw = bytesToBinary(der);
     const cert = forge.pki.certificateFromAsn1(forge.asn1.fromDer(raw, true), true);
     return {
       der: raw,

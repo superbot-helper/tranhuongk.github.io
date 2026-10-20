@@ -132,7 +132,7 @@ test('token check uses either secret, rejects empty', async () => {
 - [ ] **Step 2:** `npx vitest run` → FAIL.
 - [ ] **Step 3:** Cài `guard.ts`; `index.ts` dùng `connect({hostname: ip, port: 443})` từ `cloudflare:sockets`, `WebSocketPair`, bơm byte hai chiều không đọc nội dung; giới hạn 4 kết nối đồng thời mỗi token bằng một Durable Object đếm (hoặc bỏ giới hạn ở spike và ghi lại — chọn Durable Object nếu gói free cho phép, nếu không thì ghi chú trong log task). Không `console.log` nội dung hay token.
 - [ ] **Step 4:** `npx vitest run` → PASS. `npx wrangler dev` + `websocat`/script node gửi sai token → nhận đóng `4401`; IP `192.168.1.1` → `4403`.
-- [ ] **Step 5 (cùng chủ repo):** chủ repo chạy `npx wrangler login` trên trình duyệt; sinh token 32 byte ngẫu nhiên (`openssl rand -base64 32`), `wrangler secret put TOKEN_A`; `wrangler deploy`. Ghi URL `*.workers.dev` vào `viewer-src/src/config.ts` (`WORKER_URL`, không phải secret). Token đưa cho chủ repo, **không ghi vào repo**.
+- [ ] **Step 5 (cùng chủ repo):** chủ repo chạy `npx wrangler login` trên trình duyệt; sinh token 32 byte ngẫu nhiên (`openssl rand -hex 32` — chỉ ký tự hex; base64 có `/`, `+`, `=` không hợp lệ trong subprotocol), `wrangler secret put TOKEN_A`; `wrangler deploy`. Ghi URL `*.workers.dev` vào `viewer-src/src/config.ts` (`WORKER_URL`, không phải secret). Token đưa cho chủ repo, **không ghi vào repo**.
 - [ ] **Step 6: Checkpoint** — `git add viewer-src/worker viewer-src/src/config.ts`, chờ duyệt commit `feat(viewer): websocket-to-tcp worker pipe`.
 
 ---

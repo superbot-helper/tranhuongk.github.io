@@ -3,6 +3,7 @@ import forge from 'node-forge';
 import type { BytePipe } from './pipe';
 import { openTls, TlsError } from './tls';
 import { makeCert } from './test-certs';
+import { binaryToBytes, bytesToBinary } from './binary';
 
 /** One end of an in-memory pipe pair; delivery is async like a real socket. */
 class TestEnd implements BytePipe {
@@ -53,12 +54,13 @@ const expiredLeaf = makeCert({
 
 interface Server {
   sni: string[];
-  received: number[];
+  /** Application bytes received (and echoed). */
+  received: number;
 }
 
 /** forge TLS server on `end`: echoes application data back. */
 function startServer(end: BytePipe, leaf = expiredLeaf): Server {
-  const s: Server = { sni: [], received: [] };
+  const s: Server = { sni: [], received: 0 };
   const conn = forge.tls.createConnection({
     server: true,
     verifyClient: false,
@@ -68,16 +70,16 @@ function startServer(end: BytePipe, leaf = expiredLeaf): Server {
       return [leaf.pem, mid.pem];
     },
     getPrivateKey: () => leaf.keyPem,
-    tlsDataReady: (c) => end.send(forge.util.binary.raw.decode(c.tlsData.getBytes())),
+    tlsDataReady: (c) => end.send(binaryToBytes(c.tlsData.getBytes())),
     dataReady: (c) => {
       const bytes = c.data.getBytes();
-      s.received.push(...forge.util.binary.raw.decode(bytes));
+      s.received += bytes.length;
       c.prepare(bytes);
     },
     closed: () => end.close(),
     error: () => {},
   });
-  end.onData((b) => conn.process(forge.util.binary.raw.encode(b)));
+  end.onData((b) => conn.process(bytesToBinary(b)));
   return s;
 }
 
@@ -103,8 +105,39 @@ describe('openTls over a BytePipe', () => {
     ch.send(payload);
     await done;
     expect(echoed).toEqual([...payload]);
-    expect(srv.received).toEqual([...payload]);
+    expect(srv.received).toBe(payload.length);
   });
+
+  // One WebSocket message = one Worker TCP read; the first screen frame is hundreds of KB.
+  test.each([256 * 1024, 1024 * 1024])(
+    'a %i-byte message each way survives pipe -> TLS -> pipe (no call-stack overflow)',
+    async (size) => {
+      const [client, server] = pipePair();
+      const srv = startServer(server);
+      const ch = await openTls(client, base);
+      const payload = Uint8Array.from({ length: size }, (_, i) => (i * 31 + (i >> 10)) & 0xff);
+      const chunks: Uint8Array[] = [];
+      let total = 0;
+      const done = new Promise<void>((resolve) =>
+        ch.onData((b) => {
+          chunks.push(b);
+          total += b.length;
+          if (total >= size) resolve();
+        }),
+      );
+      ch.send(payload);
+      await done;
+      const echoed = new Uint8Array(total);
+      let offset = 0;
+      for (const c of chunks) {
+        echoed.set(c, offset);
+        offset += c.length;
+      }
+      expect(srv.received).toBe(size);
+      expect(echoed).toEqual(payload);
+    },
+    60_000,
+  );
 
   test('expired is false when now is inside every validity window', async () => {
     const [client, server] = pipePair();

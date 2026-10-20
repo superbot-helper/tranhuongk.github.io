@@ -3,6 +3,7 @@
 // only by checkServerChain (expired accepted, name + chain enforced); forge's own verdict
 // is ignored. Callers depend on ByteChannel, so this can be swapped for another TLS stack.
 import forge from 'node-forge';
+import { binaryToBytes, bytesToBinary } from './binary';
 import type { BytePipe } from './pipe';
 import { checkServerChain, checkServerChainWith, type ChainCheck } from './trust';
 
@@ -40,8 +41,9 @@ const CIPHER_SUITES = [
   forge.tls.CipherSuites.TLS_RSA_WITH_AES_128_CBC_SHA!,
 ];
 
-const toBinary = (b: Uint8Array): string => forge.util.binary.raw.encode(b);
-const fromBinary = (s: string): Uint8Array => forge.util.binary.raw.decode(s);
+// Never forge.util.binary.raw.encode here: it overflows the stack on one large message.
+const toBinary = bytesToBinary;
+const fromBinary = binaryToBytes;
 
 export function openTls(pipe: BytePipe, o: TlsOptions): Promise<TlsChannel> {
   return new Promise((resolve, reject) => {

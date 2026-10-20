@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
-import { openPipe, PipeError } from './pipe';
+import { isValidToken, openPipe, PipeError } from './pipe';
 
 class FakeWebSocket {
   static instances: FakeWebSocket[] = [];
@@ -40,7 +40,8 @@ class FakeWebSocket {
   }
 }
 
-const opts = { workerUrl: 'ws://127.0.0.1:8787', token: 'ab12', ip: '146.59.55.107', port: 443 as const };
+const TOKEN = 'ab12cd34ef56ab78cd90ef12ab34cd56';
+const opts = { workerUrl: 'ws://127.0.0.1:8787', token: TOKEN, ip: '146.59.55.107', port: 443 as const };
 const last = () => FakeWebSocket.instances[FakeWebSocket.instances.length - 1]!;
 
 beforeEach(() => {
@@ -53,8 +54,8 @@ test('connects to /tcp with the target in the query and the token only as a subp
   const p = openPipe(opts);
   const ws = last();
   expect(ws.url).toBe('ws://127.0.0.1:8787/tcp?ip=146.59.55.107&port=443');
-  expect(ws.url).not.toContain('ab12');
-  expect(ws.protocols).toEqual(['uvpipe', 'ab12']);
+  expect(ws.url).not.toContain(TOKEN);
+  expect(ws.protocols).toEqual(['uvpipe', TOKEN]);
   expect(ws.binaryType).toBe('arraybuffer');
   ws.open();
   await p;
@@ -126,4 +127,75 @@ test('rejects text frames by closing the pipe', async () => {
   pipe.onClose((r) => reasons.push(r));
   ws.message('hello');
   expect(reasons).toEqual(['unexpected text message']);
+});
+
+test('token format: >= 16 chars of [A-Za-z0-9_-] (openssl rand -hex 32 qualifies)', () => {
+  expect(isValidToken(TOKEN)).toBe(true);
+  expect(isValidToken('0123456789abcdef')).toBe(true);
+  expect(isValidToken('A-b_C'.repeat(4))).toBe(true);
+  for (const bad of ['', 'short', '0123456789abcde', 'a b'.repeat(8), 'abc/def+ghi=jklmnop', 'abcdefghijklmnop,', 'đđđđđđđđđđđđđđđđ']) {
+    expect(isValidToken(bad)).toBe(false);
+  }
+});
+
+test('an invalid token rejects (never throws) before any WebSocket, and the error never contains it', async () => {
+  const malformed = `MARKER${TOKEN.slice(0, 10)} /=+`; // spaces, '/', '=', '+' are not token chars
+  let result: Promise<unknown> | null = null;
+  expect(() => {
+    result = openPipe({ ...opts, token: malformed });
+  }).not.toThrow();
+  const err = await result!.catch((e: unknown) => e);
+  expect(FakeWebSocket.instances).toHaveLength(0);
+  expect(err).toBeInstanceOf(PipeError);
+  expect(err).toMatchObject({ code: 'invalidToken' });
+  expect(JSON.stringify(err) + String(err) + (err as Error).message).not.toContain('MARKER');
+});
+
+test('a WebSocket constructor that throws becomes a rejection with a fixed, secret-free message', async () => {
+  class ThrowingWebSocket {
+    constructor(_url: string, protocols: string[]) {
+      throw new SyntaxError(`The subprotocol '${protocols[1]}' is invalid.`);
+    }
+  }
+  vi.stubGlobal('WebSocket', ThrowingWebSocket);
+  let result: Promise<unknown> | null = null;
+  expect(() => {
+    result = openPipe(opts);
+  }).not.toThrow();
+  const err = await result!.catch((e: unknown) => e);
+  expect(err).toBeInstanceOf(PipeError);
+  expect(err).toMatchObject({ code: 'cannotOpen' });
+  expect((err as Error).message).not.toContain(TOKEN);
+});
+
+test('an abort before open closes the socket and rejects with code aborted', async () => {
+  const controller = new AbortController();
+  const p = openPipe({ ...opts, signal: controller.signal });
+  const ws = last();
+  controller.abort();
+  const err = await p.catch((e: unknown) => e);
+  expect(err).toMatchObject({ code: 'aborted' });
+  expect(ws.closedWith).toBe(1000);
+  ws.open(); // a late open must not resurrect it
+  ws.remoteClose(1000);
+});
+
+test('an already-aborted signal never creates a socket', async () => {
+  const controller = new AbortController();
+  controller.abort();
+  await expect(openPipe({ ...opts, signal: controller.signal })).rejects.toMatchObject({ code: 'aborted' });
+  expect(FakeWebSocket.instances).toHaveLength(0);
+});
+
+test('an abort after open closes the pipe (the Worker lease is released)', async () => {
+  const controller = new AbortController();
+  const p = openPipe({ ...opts, signal: controller.signal });
+  const ws = last();
+  ws.open();
+  const pipe = await p;
+  const reasons: string[] = [];
+  pipe.onClose((r) => reasons.push(r));
+  controller.abort();
+  expect(ws.closedWith).toBe(1000);
+  expect(reasons).toEqual(['closed locally']);
 });

@@ -38,8 +38,13 @@ import type { ClientIdentity } from './identity';
 
 export const COMMAND_HOST = 'functions3.ultraviewer.net';
 const SNI = 'ultraviewer';
-/** RelayCommandConnection.open attemptTimeout. */
-export const COMMAND_ATTEMPT_MS = 3_000;
+/**
+ * Per-address command attempt. Swift RelayCommandConnection uses 3 s over native TCP; the web
+ * path adds DNS + TLS to Cloudflare + WS upgrade + Durable Object lease + TCP to the relay +
+ * 2-RTT forge TLS (often on 4G), so 3 s abandons healthy attempts. The 20 s phase deadline
+ * still bounds the whole registration phase.
+ */
+export const COMMAND_ATTEMPT_MS = 8_000;
 /** FramedTCPTransport.open default timeout (data connection). */
 export const PEER_CONNECT_MS = 10_000;
 /** armDeadline: 20 s per handshake phase. */
@@ -85,8 +90,12 @@ export type SessionEvent =
 export type SessionPhase = 'closed' | 'registering' | 'lookup' | 'login' | 'active';
 
 export interface RelaySessionDeps {
-  /** A TLS channel (SNI "ultraviewer", certificate checked against `certName`) to `ip`:443. */
-  openChannel(ip: string, certName: string): Promise<ByteChannel>;
+  /**
+   * A TLS channel (SNI "ultraviewer", certificate checked against `certName`) to `ip`:443.
+   * `signal` fires only when the session abandons this attempt (timeout): the opener must
+   * then close whatever it opened (Worker lease).
+   */
+  openChannel(ip: string, certName: string, signal?: AbortSignal): Promise<ByteChannel>;
   resolve(host: string): Promise<string[]>;
   /** Milliseconds, monotonic enough for durations. */
   now(): number;
@@ -196,11 +205,31 @@ function classify(e: unknown): Failure {
     if (e.code === 'closed') return new Failure('transportClosed', `kết nối đóng trước khi TLS xong: ${e.message}`);
     return new Failure('tls', `TLS lỗi (${e.code}): ${e.message}`);
   }
-  if (e instanceof PipeError) return new Failure('transportClosed', `Worker pipe đóng (${e.closeCode})`);
+  if (e instanceof PipeError) {
+    if (e.code === 'invalidToken') return new Failure('workerRefused', 'token Worker sai định dạng (cần ≥ 16 ký tự A-Z, a-z, 0-9, _ hoặc -)');
+    if (e.code === 'cannotOpen') return new Failure('transportClosed', 'không tạo được WebSocket tới Worker (kiểm tra Worker URL)');
+    if (e.code === 'aborted') return new Failure('transportClosed', 'bỏ lần thử kết nối');
+    return new Failure('transportClosed', `Worker pipe đóng (${e.closeCode})`);
+  }
   if (e instanceof AttemptTimeout) return new Failure('transportClosed', e.message);
   if (e instanceof DnsError) return new Failure('transportClosed', `DNS lỗi: ${describe(e)}`);
   return new Failure('protocol', `dữ liệu không hợp lệ: ${describe(e)}`);
 }
+
+/**
+ * Errors out of `openChannel` other than the transport's own typed ones may quote the token
+ * (e.g. a browser `SyntaxError: The subprotocol '<token>' is invalid.`): keep only the name.
+ */
+function transportError(e: unknown): unknown {
+  if (e instanceof Failure || e instanceof PipeError || e instanceof TlsError || e instanceof AttemptTimeout || e instanceof DnsError) {
+    return e;
+  }
+  const name = e instanceof Error ? e.name : typeof e;
+  return new Failure('transportClosed', `mở kết nối lỗi (${name})`);
+}
+
+/** At most this many distinct foreign sources are logged (the counter keeps counting). */
+const MAX_LOGGED_FOREIGN_SOURCES = 32;
 
 const IPV4 = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
 const ASCII = new TextEncoder();
@@ -318,6 +347,7 @@ export class RelaySession {
   private renderer: ModernScreenRenderer | null = null;
   private dictionary: Promise<Uint8Array | null> | null = null;
   private readonly ignoredIDs = new Set<number>();
+  private readonly foreignSources = new Set<string>();
   private diag: SessionDiagnostics = freshDiagnostics();
 
   constructor(private readonly deps: RelaySessionDeps) {}
@@ -343,6 +373,7 @@ export class RelaySession {
     this.correlation = randomCorrelation();
     this.diag = freshDiagnostics();
     this.ignoredIDs.clear();
+    this.foreignSources.clear();
     this.heartbeatTicks = 0;
     this.relayAnswersPings = false;
     this.relayPingStarted = null;
@@ -408,7 +439,7 @@ export class RelaySession {
       if (!this.live(gen)) return null;
       this.status(`${label}: WS + TLS tới ${ip} (cert ${certName})…`);
       try {
-        const channel = await this.withTimeout(this.deps.openChannel(ip, certName), timeoutMs);
+        const channel = await this.withTimeout((signal) => this.deps.openChannel(ip, certName, signal), timeoutMs);
         if (!this.live(gen)) {
           channel.close();
           return null;
@@ -417,8 +448,9 @@ export class RelaySession {
         const expired = framed.expired;
         this.status(`${label}: TLS OK ${ip}${expired === null ? '' : ` (cert expired: ${expired})`}`);
         return framed;
-      } catch (e) {
+      } catch (raw) {
         if (!this.live(gen)) return null;
+        const e = transportError(raw);
         lastError = e;
         this.status(`${label}: ${ip} thất bại: ${classify(e).detail}`);
       }
@@ -426,13 +458,25 @@ export class RelaySession {
     throw lastError ?? new Failure('transportClosed', `không có địa chỉ cho ${certName}`);
   }
 
-  /** Rejects after `ms`; a channel that opens later is closed instead of leaking. */
-  private withTimeout(p: Promise<ByteChannel>, ms: number): Promise<ByteChannel> {
+  /**
+   * Rejects after `ms` and aborts the attempt's signal, so the opener closes its pipe (and the
+   * Worker lease) at once; a channel that still opens later is closed instead of leaking.
+   * The signal is never aborted once the channel has been handed out.
+   */
+  private withTimeout(open: (signal: AbortSignal) => Promise<ByteChannel>, ms: number): Promise<ByteChannel> {
+    const controller = new AbortController();
+    let p: Promise<ByteChannel>;
+    try {
+      p = open(controller.signal);
+    } catch (e) {
+      p = Promise.reject(e);
+    }
     return new Promise((resolve, reject) => {
       let done = false;
       const timer = setTimeout(() => {
         done = true;
         reject(new AttemptTimeout(ms));
+        controller.abort();
       }, ms);
       p.then(
         (channel) => {
@@ -575,8 +619,14 @@ export class RelaySession {
     const knownSource = envelope.address === this.targetAddress && envelope.port === this.targetPort;
     if (!knownSource) {
       // Swift also admits command 26 with the connection hash from another source (relay
-      // switch); out of scope for phase 0.
+      // switch); out of scope for phase 0. Logged so a frozen screen is not silent (pongs
+      // keep the watchdog quiet).
       this.diag.ignoredSources++;
+      const source = `${envelope.address}:${envelope.port}`;
+      if (!this.foreignSources.has(source) && this.foreignSources.size < MAX_LOGGED_FOREIGN_SOURCES) {
+        this.foreignSources.add(source);
+        this.status(`nguồn lạ ${source}`);
+      }
       return;
     }
     const parts = decodeMultipart(envelope.payload);
@@ -685,6 +735,9 @@ export class RelaySession {
       this.diag.decodeMsTotal += elapsed;
       this.diag.decodeMsMax = Math.max(this.diag.decodeMsMax, elapsed);
       this.diag.decodedFrames++;
+      if (this.diag.decodedFrames === 1) {
+        this.status(`frame đầu tiên: ${bitmap.width}×${bitmap.height}, giải mã ${elapsed.toFixed(1)} ms, ${payloadBytes} byte`);
+      }
       this.on({ type: 'frame', bitmap });
       // Backpressure follows successful decoding, so a slow client cannot acknowledge a
       // growing queue of stale screen updates.

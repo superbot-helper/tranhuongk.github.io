@@ -10,7 +10,7 @@ import { decodeMultipart, encodeMultipart } from '../proto/multipart';
 import { screenLong, screenParts, screenWords } from '../proto/screen-test-utils';
 import { concat, enc, u8 } from '../proto/test-utils';
 import type { ClientIdentity } from './identity';
-import { RelaySession, type SessionEvent } from './relay-session';
+import { COMMAND_ATTEMPT_MS, RelaySession, type SessionEvent } from './relay-session';
 
 // Synthetic values; the secrecy test asserts none of them reaches any emitted string.
 const SENTINEL_PASSWORD = 'SENTINEL-partner-secret-7f3a';
@@ -118,7 +118,7 @@ interface WorldOptions {
   initParts?: Uint8Array[] | null;
   sendFrameAfter17?: boolean;
   autoPong?: boolean;
-  openChannel?: (ip: string, certName: string) => Promise<ByteChannel>;
+  openChannel?: (ip: string, certName: string, signal?: AbortSignal) => Promise<ByteChannel>;
   ips?: string[];
 }
 
@@ -133,9 +133,9 @@ class World {
 
   constructor(readonly o: WorldOptions = {}) {
     this.session = new RelaySession({
-      openChannel: (ip, certName) => {
+      openChannel: (ip, certName, signal) => {
         this.opens.push({ ip, certName });
-        if (o.openChannel) return o.openChannel(ip, certName);
+        if (o.openChannel) return o.openChannel(ip, certName, signal);
         return Promise.resolve(this.relay(ip, certName));
       },
       resolve: async (host) => (host === COMMAND_HOST ? (o.ips ?? COMMAND_IPS) : []),
@@ -291,6 +291,15 @@ describe('RelaySession', () => {
       expect(log).toContain(needle);
     }
     expect(log).toContain('expired');
+
+    // Task 8 success criterion: one line for the first drawn frame (size, decode time, bytes).
+    const firstBytes = encodeMultipart(firstFrame()).length;
+    const firstLines = w.statuses().filter((s) => s.startsWith('frame đầu tiên'));
+    expect(firstLines).toHaveLength(1);
+    expect(firstLines[0]).toMatch(new RegExp(`^frame đầu tiên: 2×1, giải mã \\d+(\\.\\d)? ms, ${firstBytes} byte$`));
+    w.peer!.deliver(fromPartner(encodeMultipart(firstFrame(-2_147_483_645))));
+    await waitFor(() => w.session.diagnostics.decodedFrames === 2);
+    expect(w.statuses().filter((s) => s.startsWith('frame đầu tiên'))).toHaveLength(1);
 
     w.session.close();
     expect(w.peerTexts.at(-1)).toBe('19'); // tells the host the viewer is leaving
@@ -513,30 +522,44 @@ describe('RelaySession', () => {
     w.peer!.deliver(fromPartner(encodeMultipart([u8(28), u8(4)])));
     w.peer!.deliver(fromPartner(encodeMultipart([u8(23)])));
     w.peer!.deliver(fromPartner(encodeMultipart([u8(1)]), '192.0.2.200', 1));
-    await waitFor(() => w.session.diagnostics.ignoredSources === 1);
+    w.peer!.deliver(fromPartner(encodeMultipart([u8(26)]), '192.0.2.200', 1));
+    w.peer!.deliver(fromPartner(encodeMultipart([u8(1)]), '192.0.2.200', 2));
+    w.peer!.deliver(fromPartner(encodeMultipart([u8(1)]), '192.0.2.200', 1));
+    await waitFor(() => w.session.diagnostics.ignoredSources === 4);
     const ignored = w.statuses().filter((s) => s.startsWith('ignored'));
     expect(ignored).toEqual(['ignored 28', 'ignored 23']);
     expect(w.session.diagnostics.ignoredMessages).toBe(3);
+    // Each distinct foreign addr:port is logged once (relay switch / stray sender is visible).
+    expect(w.statuses().filter((s) => s.startsWith('nguồn lạ'))).toEqual(['nguồn lạ 192.0.2.200:1', 'nguồn lạ 192.0.2.200:2']);
     expect(w.closedEvent()).toBeUndefined();
   });
 
-  test('command IPs are tried in order, 3 s each; a late connection is closed', async () => {
+  test('command IPs are tried in order, 8 s each; the abandoned attempt is aborted and a late connection is closed', async () => {
+    expect(COMMAND_ATTEMPT_MS).toBe(8_000);
     useFakeClock();
     let late: (ch: ByteChannel) => void = () => {};
+    let lateSignal: AbortSignal | undefined;
     const lateChannel = new FakeChannel('192.0.2.4', COMMAND_HOST);
     const w: World = new World({
       ips: ['192.0.2.1', '192.0.2.4', '192.0.2.9'],
-      openChannel: (ip, certName) => {
+      openChannel: (ip, certName, signal) => {
         if (ip === '192.0.2.1') return Promise.reject(new TlsError('handshake', 'reset'));
-        if (ip === '192.0.2.4') return new Promise((resolve) => (late = resolve));
+        if (ip === '192.0.2.4') {
+          lateSignal = signal;
+          return new Promise((resolve) => (late = resolve));
+        }
         return Promise.resolve(w.relay(ip, certName));
       },
     });
     w.connect();
     await settle(() => w.opens.length === 2);
-    await vi.advanceTimersByTimeAsync(2_999);
+    expect(lateSignal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(7_999);
     expect(w.opens).toHaveLength(2);
+    expect(lateSignal?.aborted).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
+    // Abandoned: the opener is told to close its pipe (Worker lease) right away.
+    expect(lateSignal?.aborted).toBe(true);
     await settle(() => w.opens.length >= 3);
     const commandOpens = w.opens.slice(0, 3);
     expect(commandOpens.map((o) => o.ip)).toEqual(['192.0.2.1', '192.0.2.4', '192.0.2.9']);
@@ -545,6 +568,40 @@ describe('RelaySession', () => {
     await settle(() => lateChannel.closed);
     await settle(() => w.commandTexts.length >= 1);
     expect(w.command!.ip).toBe('192.0.2.9');
+  });
+
+  test('a successful attempt is never aborted afterwards', async () => {
+    const signals: (AbortSignal | undefined)[] = [];
+    const w: World = new World({
+      openChannel: (ip, certName, signal) => {
+        signals.push(signal);
+        return Promise.resolve(w.relay(ip, certName));
+      },
+    });
+    w.connect();
+    await waitFor(() => w.events.some((e) => e.type === 'frame'));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(signals).toHaveLength(2);
+    expect(signals.every((sig) => sig !== undefined && !sig.aborted)).toBe(true);
+    w.session.close();
+  });
+
+  test('an invalid-format token → closed(workerRefused) with a fixed status that never quotes the token', async () => {
+    const w = new World({ ips: ['192.0.2.1'], openChannel: () => Promise.reject(new PipeError('invalidToken')) });
+    w.connect();
+    await waitFor(() => w.closedEvent());
+    expect(w.events.at(-1)).toEqual({ type: 'closed', reason: 'workerRefused' });
+    expect(w.statuses().at(-1)).toContain('token');
+  });
+
+  test('a stray SyntaxError quoting the token never reaches a status', async () => {
+    const w = new World({
+      ips: ['192.0.2.1'],
+      openChannel: () => Promise.reject(new SyntaxError(`The subprotocol '${SENTINEL_TOKEN}' is invalid.`)),
+    });
+    w.connect();
+    await waitFor(() => w.closedEvent());
+    expect(JSON.stringify(w.events)).not.toContain(SENTINEL_TOKEN);
   });
 
   test.each([

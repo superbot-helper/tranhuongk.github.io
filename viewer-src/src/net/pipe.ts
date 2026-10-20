@@ -8,16 +8,42 @@ export interface BytePipe {
   close(): void;
 }
 
+export type PipeErrorCode =
+  /** The socket closed before the upgrade completed (`closeCode` says why). */
+  | 'closedBeforeOpen'
+  /** The token is not a valid subprotocol token; no socket was created. */
+  | 'invalidToken'
+  /** The WebSocket constructor threw (bad Worker URL); its message is not kept (it can quote the token). */
+  | 'cannotOpen'
+  /** The caller's AbortSignal fired before the socket opened. */
+  | 'aborted';
+
+const FIXED_MESSAGES: Record<Exclude<PipeErrorCode, 'closedBeforeOpen'>, string> = {
+  invalidToken: 'worker token has an invalid format (need >= 16 chars of A-Z a-z 0-9 _ -)',
+  cannotOpen: 'worker WebSocket could not be created (check the Worker URL)',
+  aborted: 'worker pipe attempt abandoned',
+};
+
 export class PipeError extends Error {
-  readonly code: 'closedBeforeOpen';
-  /** WebSocket close code (4401 bad token, 4403 forbidden target, 4429 too many, 4502 connect failed, 1006 network). */
+  readonly code: PipeErrorCode;
+  /** WebSocket close code (4401 bad token, 4403 forbidden target, 4429 too many, 4502 connect failed, 1006 network); 0 when no socket closed. */
   readonly closeCode: number;
-  constructor(closeCode: number, reason: string) {
-    super(`worker pipe closed before open: ${describeClose(closeCode, reason)}`);
+  constructor(closeCode: number, reason: string);
+  constructor(code: Exclude<PipeErrorCode, 'closedBeforeOpen'>);
+  constructor(a: number | Exclude<PipeErrorCode, 'closedBeforeOpen'>, reason = '') {
+    // Messages are fixed strings or Worker close reasons: never the token.
+    super(typeof a === 'number' ? `worker pipe closed before open: ${describeClose(a, reason)}` : FIXED_MESSAGES[a]);
     this.name = 'PipeError';
-    this.code = 'closedBeforeOpen';
-    this.closeCode = closeCode;
+    this.code = typeof a === 'number' ? 'closedBeforeOpen' : a;
+    this.closeCode = typeof a === 'number' ? a : 0;
   }
+}
+
+/** Sec-WebSocket-Protocol token syntax, narrowed: what `openssl rand -hex 32` produces fits. */
+const TOKEN_PATTERN = /^[A-Za-z0-9_-]{16,}$/;
+
+export function isValidToken(token: string): boolean {
+  return TOKEN_PATTERN.test(token);
 }
 
 export const PIPE_SUBPROTOCOL = 'uvpipe';
@@ -26,13 +52,31 @@ function describeClose(code: number, reason: string): string {
   return reason ? `${code} ${reason}` : String(code);
 }
 
+export interface PipeOptions {
+  workerUrl: string;
+  token: string;
+  ip: string;
+  port: 443;
+  /** Abandons the attempt: closes the socket (before or after open) so the Worker lease is freed. */
+  signal?: AbortSignal;
+}
+
 /**
  * Note: the Worker completes the upgrade before rejecting (so the close code is readable),
  * so a bad token usually resolves here and then closes with 4401 — watch `onClose`.
+ * Never throws synchronously; every failure is a rejected PipeError without the token.
  */
-export function openPipe(o: { workerUrl: string; token: string; ip: string; port: 443 }): Promise<BytePipe> {
+export function openPipe(o: PipeOptions): Promise<BytePipe> {
+  if (!isValidToken(o.token)) return Promise.reject(new PipeError('invalidToken'));
+  if (o.signal?.aborted) return Promise.reject(new PipeError('aborted'));
   const url = `${o.workerUrl.replace(/\/+$/, '')}/tcp?ip=${encodeURIComponent(o.ip)}&port=${o.port}`;
-  const ws = new WebSocket(url, [PIPE_SUBPROTOCOL, o.token]);
+  let ws: WebSocket;
+  try {
+    ws = new WebSocket(url, [PIPE_SUBPROTOCOL, o.token]);
+  } catch {
+    // e.g. SyntaxError "The subprotocol '<token>' is invalid." / bad URL: drop the message.
+    return Promise.reject(new PipeError('cannotOpen'));
+  }
   ws.binaryType = 'arraybuffer';
 
   const dataCbs: ((b: Uint8Array) => void)[] = [];
@@ -72,7 +116,21 @@ export function openPipe(o: { workerUrl: string; token: string; ip: string; port
 
   return new Promise((resolve, reject) => {
     let opened = false;
+    let aborted = false;
+    o.signal?.addEventListener(
+      'abort',
+      () => {
+        if (closedReason !== null) return;
+        if (!opened) {
+          aborted = true;
+          reject(new PipeError('aborted'));
+        }
+        pipe.close();
+      },
+      { once: true },
+    );
     ws.onopen = () => {
+      if (aborted || closedReason !== null) return;
       opened = true;
       resolve(pipe);
     };
@@ -95,7 +153,7 @@ export function openPipe(o: { workerUrl: string; token: string; ip: string; port
       // A close event always follows; it carries the code.
     };
     ws.onclose = (e: CloseEvent) => {
-      if (!opened) reject(new PipeError(e.code, e.reason));
+      if (!opened && !aborted) reject(new PipeError(e.code, e.reason));
       finish(describeClose(e.code, e.reason));
     };
   });

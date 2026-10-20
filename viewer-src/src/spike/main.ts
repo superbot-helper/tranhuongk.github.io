@@ -3,6 +3,7 @@
 // Sec-WebSocket-Protocol (and, when the owner allows it, into this device's storage).
 import { WORKER_URL } from '../config';
 import { resolveIPv4 } from '../net/dns';
+import { isValidToken } from '../net/pipe';
 import { DEFAULT_DISPLAY_NAME } from '../proto/client-defaults';
 import type { ScreenBitmap } from '../proto/screen-renderer';
 import { createIdentity, forgetDevice, IDENTITY_STORAGE_KEY, loadIdentity, saveIdentity, type ClientIdentity } from '../session/identity';
@@ -12,6 +13,8 @@ import { workerChannelOpener } from '../session/worker-channel';
 import { probeCommandTls } from './probe';
 
 const TOKEN_KEY = 'uvweb.token';
+/** Fixed text: never echo the token (a browser error for a bad subprotocol quotes it). */
+const BAD_TOKEN_FORMAT = 'Token sai định dạng (cần ≥ 16 ký tự A-Z, a-z, 0-9, _ hoặc -; tạo bằng openssl rand -hex 32).';
 const MAX_LOG_LINES = 400;
 
 const REASONS: Record<SessionFailure, string> = {
@@ -149,7 +152,8 @@ if (app) {
     const rtt = d.relayRttMs === null ? '–' : `${Math.round(d.relayRttMs)} ms`;
     statsEl.textContent =
       `⏱ ${elapsed} · pha ${session.phase} · ${d.decodedFrames} frame · giải mã TB ${avg} ms ` +
-      `(max ${d.decodeMsMax.toFixed(1)}) · relay RTT ${rtt} · pong ${d.relayPongs}`;
+      `(max ${d.decodeMsMax.toFixed(1)}) · relay RTT ${rtt} · pong ${d.relayPongs} · ` +
+      `bỏ qua ${d.ignoredMessages} tin / ${d.ignoredSources} từ nguồn lạ`;
   };
 
   const setBusy = (busy: boolean) => {
@@ -165,6 +169,7 @@ if (app) {
     const partnerID = partner.value.replace(/\s+/g, '');
     if (!url) return log('Chưa có Worker URL (mở Diagnostics để nhập).');
     if (!token) return log('Nhập Worker token trước.');
+    if (!isValidToken(token)) return log(BAD_TOKEN_FORMAT);
     if (!/^[0-9]{1,64}$/.test(partnerID)) return log('ID đối tác chỉ gồm chữ số.');
     if (!password.value) return log('Nhập mật khẩu đối tác.');
     persist();
@@ -243,6 +248,7 @@ if (app) {
     const token = tokenInput.value.trim();
     if (!url) return log('Chưa có Worker URL.');
     if (!token) return log('Nhập Worker token trước.');
+    if (!isValidToken(token)) return log(BAD_TOKEN_FORMAT);
     probeButton.disabled = true;
     probeCommandTls({ workerUrl: url, token, log })
       .then((r) => log(`TLS OK (cert expired: ${r.expired}), HTTP header received`))
