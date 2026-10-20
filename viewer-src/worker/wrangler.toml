@@ -1,0 +1,16 @@
+name = "uv-web-viewer-pipe"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+
+# Tokens are Worker secrets (never in this file):
+#   npx wrangler secret put TOKEN_A      (optionally TOKEN_B)
+# Local dev reads them from .dev.vars (git-ignored); see .dev.vars.example.
+
+[[durable_objects.bindings]]
+name = "LIMITER"
+class_name = "ConnLimiter"
+
+# SQLite-backed Durable Objects are available on the Workers free plan.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ConnLimiter"]
