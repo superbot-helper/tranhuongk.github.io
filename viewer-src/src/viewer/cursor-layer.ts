@@ -295,6 +295,12 @@ export class CursorLayer {
     this.changed();
   }
 
+  /** Trackpad mode: show the pointer where the page just moved it; host 28 events confirm it. */
+  setPosition(x: number, y: number): void {
+    this.presenter.setPosition(x, y);
+    this.changed();
+  }
+
   /** The screen canvas box, frame size, crop and virtual origin (ScreenView.view()). */
   setView(view: View): void {
     const r = view.canvasRect;

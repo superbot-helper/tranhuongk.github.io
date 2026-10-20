@@ -635,4 +635,154 @@ describe('desktop viewer page', () => {
       expect(context.drawImage).toHaveBeenCalledTimes(1);
     });
   });
+
+  describe('touch (phones and tablets)', () => {
+    const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+    const tap = (id: number, x: number, y: number) => {
+      pointer('pointerdown', x, y, { pointerType: 'touch', pointerId: id });
+      pointer('pointerup', x, y, { pointerType: 'touch', pointerId: id, buttons: 0 });
+    };
+    const touchMove = (id: number, x: number, y: number) => pointer('pointermove', x, y, { pointerType: 'touch', pointerId: id });
+    const overlayContext = () => {
+      const context = { setTransform: vi.fn(), clearRect: vi.fn(), drawImage: vi.fn(), putImageData: vi.fn(), imageSmoothingEnabled: true };
+      vi.stubGlobal('ImageData', class { constructor(readonly data: unknown, readonly width: number, readonly height: number) {} });
+      vi.mocked(HTMLCanvasElement.prototype.getContext).mockReturnValue(context as never);
+      return context;
+    };
+    /** Holds the left button through tap, then touch-and-drag to the right. */
+    const touchDragStart = () => {
+      tap(1, 100, 100);
+      pointer('pointerdown', 100, 100, { pointerType: 'touch', pointerId: 1 });
+      for (let x = 103; x <= 121; x += 3) touchMove(1, x, 100);
+    };
+
+    afterEach(() => vi.unstubAllGlobals());
+
+    test('a touch does not focus the textarea (the soft keyboard opens only from ⌨) and a tap clicks', async () => {
+      connect();
+      const down = pointer('pointerdown', 480, 270, { pointerType: 'touch' });
+      expect(down.defaultPrevented).toBe(true);
+      expect(document.activeElement).not.toBe(textarea);
+      pointer('pointerup', 480, 270, { pointerType: 'touch', buttons: 0 });
+      await settle();
+      expect(session.sent).toEqual([]);
+      await wait(300);
+      expect(session.sent).toEqual([
+        '8|||512|||0|||960|||540',
+        `8|||513|||1|||${packedPosition(960, 540)}`,
+        '8|||512|||1|||960|||540',
+        `8|||514|||0|||${packedPosition(960, 540)}`,
+      ]);
+      expect(document.activeElement).not.toBe(textarea);
+    });
+
+    test('a mouse or pen on a touch device keeps the desktop behaviour', async () => {
+      connect();
+      pointer('pointerdown', 480, 270, { pointerType: 'pen' });
+      await settle();
+      expect(document.activeElement).toBe(textarea);
+      expect(session.sent).toEqual(['8|||512|||0|||960|||540', `8|||513|||1|||${packedPosition(960, 540)}`]);
+    });
+
+    test('pointercancel during a touch drag releases everything held', async () => {
+      connect();
+      touchDragStart();
+      await settle();
+      expect(session.sent.filter((m) => typeof m === 'string' && m.startsWith('8|||513'))).toHaveLength(1);
+      const n = session.sent.length;
+      pointer('pointercancel', 121, 100, { pointerType: 'touch', pointerId: 1 });
+      await settle();
+      expect(sentSince(n).some((m) => typeof m === 'string' && m.startsWith('8|||514|||0|||'))).toBe(true);
+    });
+
+    test('switching from the touch trackpad to a mouse releases what the touch held first', async () => {
+      connect();
+      touchDragStart();
+      await settle();
+      const n = session.sent.length;
+      pointer('pointerdown', 480, 270); // mouse
+      await settle();
+      const after = sentSince(n) as string[];
+      const release = after.findIndex((m) => m.startsWith('8|||514|||'));
+      const press = after.findIndex((m) => m.startsWith('8|||513|||'));
+      expect(release).toBeGreaterThanOrEqual(0);
+      expect(press).toBeGreaterThan(release);
+    });
+
+    test('the trackpad moves the overlay pointer at once; a stale host position does not pull it back', async () => {
+      const context = overlayContext();
+      connect();
+      pointer('pointerdown', 100, 100, { pointerType: 'touch' });
+      for (let x = 102; x <= 120; x += 2) touchMove(1, x, 100); // 20 css px => 40 remote px
+      await settle();
+      expect(session.sent.at(-1)).toBe('8|||512|||0|||1000|||540');
+      // 1920x1080 in 960x540: scale 0.5; the fallback arrow's hotspot is 0,0.
+      expect(context.drawImage).toHaveBeenLastCalledWith(expect.anything(), 500, 270, 6, 9.5);
+      session.emit({ type: 'cursor', event: { type: 'position', x: 960, y: 540 } });
+      expect(context.drawImage).toHaveBeenLastCalledWith(expect.anything(), 500, 270, 6, 9.5);
+      pointer('pointerup', 120, 100, { pointerType: 'touch', buttons: 0 });
+      // The host's latest word is applied once the trackpad has been still for a moment.
+      session.emit({ type: 'cursor', event: { type: 'position', x: 1002, y: 540 } });
+      await wait(600);
+      expect(context.drawImage).toHaveBeenLastCalledWith(expect.anything(), 501, 270, 6, 9.5);
+    });
+
+    test('floating ⌨ toggles the soft keyboard and Phím opens the special-keys menu', () => {
+      connect();
+      const keyboard = $<HTMLButtonElement>('[data-touch="keyboard"]');
+      keyboard.click();
+      expect(document.activeElement).toBe(textarea);
+      keyboard.click();
+      expect(document.activeElement).not.toBe(textarea);
+      $<HTMLButtonElement>('[data-touch="keys"]').click();
+      expect($<HTMLDetailsElement>('#special-keys').open).toBe(true);
+      // Choosing a key after a touch does not pop the soft keyboard up.
+      pointer('pointerdown', 10, 10, { pointerType: 'touch', pointerId: 4 });
+      pointer('pointerup', 10, 10, { pointerType: 'touch', pointerId: 4, buttons: 0 });
+      $<HTMLButtonElement>('[data-special="win"]').click();
+      expect(document.activeElement).not.toBe(textarea);
+    });
+
+    test('pinch-zoom is local, and mouse clicks and the overlay stay aligned under it', async () => {
+      const context = overlayContext();
+      connect();
+      const wrapper = $<HTMLDivElement>('#zoom');
+      // The wrapper and the canvas fill a 960x540 viewport at the origin; their rects follow the transform.
+      const rect = () => {
+        const m = /translate\((-?[\d.]+)px, (-?[\d.]+)px\) scale\(([\d.]+)\)/.exec(wrapper.style.transform);
+        const [tx, ty, s] = m ? [Number(m[1]), Number(m[2]), Number(m[3])] : [0, 0, 1];
+        return DOMRect.fromRect({ x: tx, y: ty, width: 960 * s, height: 540 * s });
+      };
+      wrapper.getBoundingClientRect = rect;
+      canvas.getBoundingClientRect = rect;
+      pointer('pointerdown', 380, 270, { pointerType: 'touch', pointerId: 1 });
+      pointer('pointerdown', 580, 270, { pointerType: 'touch', pointerId: 2 });
+      for (let i = 1; i <= 10; i++) {
+        touchMove(1, 380 - i * 10, 270);
+        touchMove(2, 580 + i * 10, 270);
+      }
+      pointer('pointerup', 280, 270, { pointerType: 'touch', pointerId: 1, buttons: 0 });
+      pointer('pointerup', 680, 270, { pointerType: 'touch', pointerId: 2, buttons: 0 });
+      await settle();
+      expect(session.sent).toEqual([]);
+      expect(wrapper.style.transform).toBe('translate(-480px, -270px) scale(2)');
+      // Mouse at the viewport's top-left now points at remote (480, 270), its centre at the remote centre.
+      pointer('pointerdown', 0, 0);
+      pointer('pointerup', 0, 0, { buttons: 0 });
+      pointer('pointerdown', 480, 270);
+      await settle();
+      expect(session.sent).toContain(`8|||513|||1|||${packedPosition(480, 270)}`);
+      expect(session.sent.at(-1)).toBe(`8|||513|||1|||${packedPosition(960, 540)}`);
+      // The overlay, inside the wrapper, keeps its layout size: remote (480, 270) is drawn at layout
+      // (240, 135), which the transform puts at client (0, 0) - where the mouse pointed.
+      session.emit({ type: 'cursor', event: { type: 'position', x: 480, y: 270 } });
+      expect($<HTMLCanvasElement>('#cursor-layer').style.width).toBe('960px');
+      expect(context.drawImage).toHaveBeenLastCalledWith(expect.anything(), 240, 135, 6, 9.5);
+      // A new scale mode or the end of the session resets the zoom.
+      const scale = $<HTMLSelectElement>('#scale');
+      scale.value = 'actual';
+      scale.dispatchEvent(new Event('change', { bubbles: true }));
+      expect(wrapper.style.transform).toBe('');
+    });
+  });
 });

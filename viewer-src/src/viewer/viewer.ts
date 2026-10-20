@@ -6,7 +6,7 @@
 // `inputPermission(true)` after it.
 import { DEFAULT_DISPLAY_NAME } from '../proto/client-defaults';
 import { monitorRegion, type QualityPreset, type RemoteCommand } from '../proto/commands';
-import { cursorShapeRequest } from '../proto/cursor';
+import { cursorShapeRequest, type CursorEvent } from '../proto/cursor';
 import type { ScreenBitmap } from '../proto/screen-renderer';
 import { createIdentity, forgetDevice, IDENTITY_STORAGE_KEY, loadIdentity, saveIdentity, type ClientIdentity } from '../session/identity';
 import { createFrameScheduler } from '../session/latest-frame';
@@ -23,6 +23,7 @@ import { CursorLayer } from './cursor-layer';
 import { DesktopInput } from './input';
 import { ScreenView, type Crop, type ScaleMode } from './screen';
 import { createToolbar, type SpecialKey } from './toolbar';
+import { attachTouch, ViewZoom } from './touch';
 
 /** The RelaySession surface the page uses (a fake one in tests and in the dev-only demo). */
 export interface ViewerSession {
@@ -50,6 +51,8 @@ export interface ViewerHandle {
 
 const OLD_PEER_NOTICE = 'Máy Windows dùng UltraViewer cũ (< 6.2.13): chỉ điều khiển chuột';
 const VIEW_ONLY_NOTICE = 'Máy Windows đang để chế độ chỉ xem: chuột và bàn phím không được gửi.';
+/** After a trackpad move, host pointer positions (older, by the round trip) are not drawn for this long. */
+const LOCAL_POINTER_HOLD_MS = 500;
 const OVERFLOW_NOTICE = 'Hàng đợi chuột/bàn phím bị đầy: đã thả mọi phím và nút, Điều khiển đã tắt. Bật lại để tiếp tục.';
 
 const LAYOUT = `
@@ -75,8 +78,10 @@ const LAYOUT = `
     <div id="toolbar" hidden></div>
     <p id="notice" role="alert" hidden></p>
     <div id="viewport" class="viewport">
-      <canvas id="screen" width="16" height="9"></canvas>
-      <canvas id="cursor-layer" aria-hidden="true"></canvas>
+      <div id="zoom" class="zoom">
+        <canvas id="screen" width="16" height="9"></canvas>
+        <canvas id="cursor-layer" aria-hidden="true"></canvas>
+      </div>
       <textarea id="keyboard-input" aria-label="Bàn phím gửi tới máy Windows" autocomplete="off" autocapitalize="off"
         autocorrect="off" spellcheck="false" tabindex="-1"></textarea>
       <div id="composition" class="composition" aria-hidden="true" hidden></div>
@@ -138,6 +143,19 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
   let clock: ReturnType<typeof setInterval> | null = null;
 
   const screenView = new ScreenView(canvas, viewport);
+  // Local pinch-zoom (touch) of the screen + overlay wrapper; nothing is sent for it.
+  const zoom = new ViewZoom($<HTMLDivElement>('zoom'));
+  /** Touch must not pop the soft keyboard up: only the ⌨ button focuses the textarea then. */
+  let lastPointerType = '';
+  const onAnyPointerDown = (e: PointerEvent) => {
+    lastPointerType = e.pointerType;
+  };
+  document.addEventListener('pointerdown', onAnyPointerDown, true);
+  /** When the last trackpad move was drawn locally (performance.now()). */
+  let localPointerAt = Number.NEGATIVE_INFINITY;
+  /** The latest host position received during the hold, applied once it ends (28 is sent on change only). */
+  let heldPosition: CursorEvent | null = null;
+  let heldTimer: ReturnType<typeof setTimeout> | null = null;
   // Remote pointer overlay; hides the browser cursor (controlling) only once a real shape is known.
   let cursorKnown = false;
   let controlActive = false;
@@ -157,13 +175,19 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
       },
     },
   );
-  /** The overlay follows the screen canvas box, frame size, crop and scale. */
-  const syncCursorView = () => cursorLayer.setView(screenView.view());
+  /** The overlay follows the screen canvas box, frame size, crop and scale (inside the zoom wrapper: unzoomed). */
+  const syncCursorView = () => cursorLayer.setView(zoom.layoutView(screenView.view()));
   const draw = createFrameScheduler<ScreenBitmap>((bitmap) => {
     screenView.draw(bitmap);
     syncCursorView();
   }, deps.schedule);
-  const resizeObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(syncCursorView) : null;
+  const resizeObserver =
+    typeof ResizeObserver === 'function'
+      ? new ResizeObserver(() => {
+          zoom.refit();
+          syncCursorView();
+        })
+      : null;
   resizeObserver?.observe(viewport);
   resizeObserver?.observe(canvas);
   const input = new DesktopInput({
@@ -182,6 +206,70 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     },
   });
 
+  function onCursorEvent(event: CursorEvent): void {
+    if (event.type === 'position') {
+      // While the trackpad drives the pointer the overlay shows it locally; host positions lag behind.
+      const wait = localPointerAt + LOCAL_POINTER_HOLD_MS - performance.now();
+      if (wait > 0) {
+        heldPosition = event;
+        heldTimer ??= setTimeout(() => {
+          heldTimer = null;
+          const held = heldPosition;
+          heldPosition = null;
+          if (held) onCursorEvent(held);
+        }, wait);
+        return;
+      }
+      heldPosition = null;
+    }
+    cursorLayer.onEvent(event);
+  }
+
+  function dropHeldPosition(): void {
+    if (heldTimer !== null) clearTimeout(heldTimer);
+    heldTimer = null;
+    heldPosition = null;
+    localPointerAt = Number.NEGATIVE_INFINITY;
+  }
+
+  const focusUnlessTouch = () => {
+    if (lastPointerType !== 'touch') input.focusKeyboard();
+  };
+  const showLocalPointer = (p: { x: number; y: number }) => {
+    localPointerAt = performance.now();
+    cursorLayer.setPosition(p.x, p.y);
+  };
+
+  const detachTouch = attachTouch(
+    viewport,
+    {
+      enabled: () => input.isEnabled && input.started,
+      move: (p) => {
+        if (input.trackpadMove(p)) showLocalPointer(p);
+      },
+      down: (button, p) => {
+        if (input.trackpadButton(button, true, p)) showLocalPointer(p);
+      },
+      up: (button, p) => {
+        input.trackpadButton(button, false, p);
+      },
+      wheel: (deltaY) => {
+        input.trackpadWheel(deltaY);
+      },
+      zoom: (scale, center) => zoom.zoomTo(scale, center),
+      pan: (dx, dy) => zoom.panBy(dx, dy),
+      zoomScale: () => zoom.scale,
+      showKeyboard: () => {
+        if (document.activeElement === textarea) textarea.blur();
+        else input.focusKeyboard();
+      },
+      specialKeys: () => toolbar.openSpecialKeys(),
+      cancel: () => input.releaseAll(),
+      remotePosition: () => cursorLayer.presenter.snapshot.position,
+    },
+    () => screenView.view(),
+  );
+
   const fullscreenSupported = typeof stage.requestFullscreen === 'function' && document.fullscreenEnabled !== false;
   const toolbar = createToolbar(
     toolbarEl,
@@ -190,10 +278,11 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
         controlOn = on;
         if (on) overflowNotice = false;
         refreshControl();
-        if (on) input.focusKeyboard();
+        if (on) focusUnlessTouch();
       },
       monitor: (index) => selectMonitor(index),
       scale: (mode: ScaleMode) => {
+        zoom.reset();
         screenView.setScale(mode);
         syncCursorView();
       },
@@ -202,7 +291,7 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
       special: (key: SpecialKey) => {
         if (key === 'ctrlAltDel') command({ type: 'action', action: 'ctrlAltDel' }, true);
         else input.sendSynthetic(key);
-        input.focusKeyboard();
+        focusUnlessTouch();
       },
       fullscreen: () => toggleFullscreen(),
       refresh: () => {
@@ -262,6 +351,7 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     input.releaseAll();
     const crop = cropFor(index);
     selectedMonitor = crop ? index : 0;
+    zoom.reset();
     screenView.setCrop(crop);
     syncCursorView();
     if (peer) toolbar.setMonitors(peer.monitors, selectedMonitor);
@@ -279,7 +369,7 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     stage
       .requestFullscreen({ navigationUI: 'hide' })
       .then(() => keyboardApi()?.lock?.())
-      .then(() => input.focusKeyboard())
+      .then(() => focusUnlessTouch())
       .catch((e: unknown) => log(`Toàn màn hình / khoá phím: ${describe(e)}`));
   }
 
@@ -338,7 +428,9 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     input.stop();
     draw.clear();
     screenView.forget();
+    zoom.reset();
     cursorLayer.setVisible(false);
+    dropHeldPosition();
     cursorLayer.reset();
     peer = null;
     controlAllowed = false;
@@ -418,7 +510,7 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
               draw.push(e.bitmap);
               break;
             case 'cursor':
-              cursorLayer.onEvent(e.event);
+              onCursorEvent(e.event);
               break;
             case 'closed':
               onClosed(e.reason);
@@ -455,6 +547,9 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
 
   return {
     destroy() {
+      detachTouch();
+      dropHeldPosition();
+      document.removeEventListener('pointerdown', onAnyPointerDown, true);
       input.detach();
       resizeObserver?.disconnect();
       cursorLayer.dispose();

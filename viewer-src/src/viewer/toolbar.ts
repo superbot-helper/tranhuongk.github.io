@@ -34,6 +34,8 @@ export interface Toolbar {
   setState(s: ToolbarState): void;
   setMonitors(monitors: readonly RemoteMonitor[], selected: number): void;
   setFullscreen(active: boolean): void;
+  /** Open the special-keys menu (the floating "Phím" button on touch devices). */
+  openSpecialKeys(): void;
   /** Back to defaults for a new session. */
   reset(): void;
 }
@@ -122,6 +124,10 @@ export function createToolbar(root: HTMLElement, h: ToolbarHandlers, o: { fullsc
     setFullscreen(active) {
       fullscreen.setAttribute('aria-pressed', String(active));
       fullscreen.textContent = active ? 'Thoát toàn màn hình' : 'Toàn màn hình';
+    },
+    openSpecialKeys() {
+      special.open = true;
+      special.scrollIntoView?.({ block: 'nearest' });
     },
     reset() {
       special.open = false;

@@ -2,7 +2,7 @@
 <html lang="vi">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="robots" content="noindex,nofollow">
     <title>UV Web Viewer</title>
     <style>
@@ -10,7 +10,8 @@
       html, body { height: 100%; }
       body { margin: 0; }
       #app { display: flex; flex-direction: column; min-height: 100%; height: 100dvh; box-sizing: border-box;
-             padding: 8px 16px; gap: 6px; }
+             padding: max(8px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
+                      max(8px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); gap: 6px; }
       h1 { font-size: 1.1rem; margin: 0; }
       .connected h1 { display: none; }
       header.top { display: flex; flex-direction: column; gap: 8px; flex: none; }
@@ -39,8 +40,12 @@
                     padding: 6px; background: Canvas; border: 1px solid rgba(127, 127, 127, 0.6); border-radius: 4px; }
       #notice { margin: 0; padding: 6px 10px; font-size: 0.85rem; background: rgba(255, 193, 7, 0.2); border-radius: 4px; flex: none; }
       #notice[hidden] { display: none; }
-      .viewport { position: relative; flex: 1 1 auto; min-height: 0; background: #000; overflow: hidden; }
+      /* The screen area takes every touch (trackpad mode); the rest of the page scrolls and zooms normally. */
+      .viewport { position: relative; flex: 1 1 auto; min-height: 0; background: #000; overflow: hidden; touch-action: none; }
       .viewport[data-scale="actual"] { overflow: auto; }
+      /* Screen + overlay wrapper: the local pinch-zoom transform (touch.ts ViewZoom) goes here. */
+      .zoom { position: relative; width: 100%; height: 100%; transform-origin: 0 0; }
+      .viewport[data-scale="actual"] .zoom { width: max-content; height: max-content; }
       #screen { display: block; object-fit: contain; touch-action: none; user-select: none; -webkit-user-select: none; }
       /* Remote pointer overlay: sized and placed by CursorLayer, never takes pointer events. */
       #cursor-layer { display: block; pointer-events: none; }
@@ -55,6 +60,15 @@
                      overflow: hidden; white-space: pre; padding: 2px 6px; border-radius: 4px; font-size: 16px;
                      background: rgba(20, 20, 20, 0.85); color: #fff; text-decoration: underline; }
       .composition[hidden] { display: none; }
+      /* Floating ⌨ / Phím on touch devices (coarse pointer, or after a first touch), bottom-right
+         inside the safe area, under the toolbar's reach. */
+      .touch-buttons { position: fixed; z-index: 5; display: none; gap: 10px;
+                       right: max(12px, env(safe-area-inset-right)); bottom: max(12px, env(safe-area-inset-bottom)); }
+      .touch-buttons button { min-width: 48px; min-height: 48px; padding: 8px 12px; font-size: 1.1rem; border-radius: 24px;
+                              border: 1px solid rgba(255, 255, 255, 0.5); background: rgba(20, 20, 20, 0.7); color: #fff;
+                              touch-action: manipulation; -webkit-user-select: none; user-select: none; }
+      .connected .touch-buttons.touch-seen { display: flex; }
+      @media (pointer: coarse) { .connected .touch-buttons { display: flex; } }
       details#diagnostics { flex: none; }
       details#diagnostics label, details#diagnostics button { margin-top: 8px; }
       #stats { font-size: 0.8rem; opacity: 0.75; margin: 4px 0; min-height: 1em; }

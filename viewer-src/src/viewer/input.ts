@@ -3,6 +3,9 @@
 // blur / visibilitychange hidden / pagehide / disable / stop enqueue `releaseAll()` behind
 // whatever is pending (FIFO, never `queue.clear()`); only a queue overflow clears, then
 // releases, then reports so the page can turn Điều khiển off.
+// Touch pointers (pointerType 'touch') are left to viewer/touch.ts (trackpad mode), which comes
+// back through the trackpad* methods; a real mouse or pen keeps the desktop path here. Switching
+// between the two releases everything held first.
 import { InputEncoder, type InputMessage, type KeyInput, type PointerButton, type WheelMode } from '../input/encoder';
 import { toRemote, type View } from '../input/geometry';
 import { codeToKey } from '../input/keymap';
@@ -80,6 +83,8 @@ export class DesktopInput {
   private binaryKeyboard = false;
   /** Bumped on overflow so the rest of an in-progress batch is dropped (its keys were just released). */
   private overflows = 0;
+  /** Which path pressed or moved last: switching paths releases what the other one held. */
+  private pointerPath: 'desktop' | 'trackpad' | null = null;
   /** Where the last press landed, relative to the composition preview's parent: the remote caret is likely there. */
   private caretHint: { x: number; y: number } | null = null;
   /** Keys whose keydown was sent as text: their keyup (still flagged Alt) must not press Alt again. */
@@ -91,7 +96,9 @@ export class DesktopInput {
     this.listen(canvas, 'pointerdown', (e) => this.onPointerDown(e as PointerEvent));
     this.listen(canvas, 'pointermove', (e) => this.onPointerMove(e as PointerEvent));
     this.listen(canvas, 'pointerup', (e) => this.onPointerUp(e as PointerEvent));
-    this.listen(canvas, 'pointercancel', () => this.push(this.encoder?.pointerMove(NO_POINT, 0) ?? []));
+    this.listen(canvas, 'pointercancel', (e) => {
+      if ((e as PointerEvent).pointerType !== 'touch') this.push(this.encoder?.pointerMove(NO_POINT, 0) ?? []);
+    });
     // Keep focus on the textarea: the canvas is not focusable, its default mousedown would blur it.
     this.listen(canvas, 'mousedown', (e) => e.preventDefault());
     this.listen(canvas, 'wheel', (e) => this.onWheel(e as WheelEvent), { passive: false });
@@ -195,6 +202,27 @@ export class DesktopInput {
     }
   }
 
+  /** Trackpad mode (touch): move the remote pointer to `p` (wire coordinates). False when not sent. */
+  trackpadMove(p: { x: number; y: number }): boolean {
+    if (!this.useTrackpad()) return false;
+    this.push(this.encoder!.pointerMove(p));
+    return true;
+  }
+
+  /** Trackpad mode: press or release `button` at `p` (a move is sent first by the encoder). */
+  trackpadButton(button: PointerButton, down: boolean, p: { x: number; y: number }): boolean {
+    if (!this.useTrackpad()) return false;
+    this.push(down ? this.encoder!.pointerDown(button, p) : this.encoder!.pointerUp(button, p));
+    return true;
+  }
+
+  /** Trackpad mode: two-finger scroll, CSS px in WheelEvent convention (pixel mode, 40 px per notch). */
+  trackpadWheel(deltaY: number): boolean {
+    if (!this.useTrackpad()) return false;
+    this.push(this.encoder!.wheel(deltaY, 'pixel'));
+    return true;
+  }
+
   focusKeyboard(): void {
     if (document.activeElement !== this.o.textarea) this.o.textarea.focus({ preventScroll: true });
   }
@@ -210,11 +238,24 @@ export class DesktopInput {
     return this.enabled && this.encoder !== null;
   }
 
+  private usePath(path: 'desktop' | 'trackpad'): void {
+    if (this.pointerPath !== null && this.pointerPath !== path) this.releaseAll();
+    this.pointerPath = path;
+  }
+
+  private useTrackpad(): boolean {
+    if (!this.active()) return false;
+    this.usePath('trackpad');
+    return true;
+  }
+
   private keyboardActive(): boolean {
     return this.active() && this.binaryKeyboard;
   }
 
   private onPointerDown(e: PointerEvent): void {
+    // Touch never focuses the textarea: the soft keyboard opens only from the ⌨ button.
+    if (e.pointerType === 'touch') return;
     this.focusKeyboard();
     const parent = this.o.composition?.parentElement;
     if (parent) {
@@ -225,6 +266,7 @@ export class DesktopInput {
     e.preventDefault();
     const p = toRemote(e.clientX, e.clientY, this.o.view());
     if (!p) return;
+    this.usePath('desktop');
     try {
       this.o.canvas.setPointerCapture?.(e.pointerId);
     } catch {
@@ -234,7 +276,7 @@ export class DesktopInput {
   }
 
   private onPointerMove(e: PointerEvent): void {
-    if (!this.active()) return;
+    if (!this.active() || e.pointerType === 'touch') return;
     const encoder = this.encoder!;
     const p = toRemote(e.clientX, e.clientY, this.o.view(), e.buttons !== 0);
     // A chorded button change arrives as a pointermove with `button` set.
@@ -247,7 +289,7 @@ export class DesktopInput {
   }
 
   private onPointerUp(e: PointerEvent): void {
-    if (!this.active() || !isButton(e.button)) return;
+    if (!this.active() || e.pointerType === 'touch' || !isButton(e.button)) return;
     e.preventDefault();
     const p = toRemote(e.clientX, e.clientY, this.o.view(), true);
     this.push(this.encoder!.pointerUp(e.button, p ?? NO_POINT));
