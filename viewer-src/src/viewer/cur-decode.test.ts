@@ -85,12 +85,14 @@ describe('decodeCur (DIB)', () => {
     expect(() => decodeCur(curFile(bad, 2, 1))).toThrow(CurDecodeError);
   });
 
-  test('inverting pixels (AND=1, XOR!=0) cannot be a static image and throw like Swift', () => {
-    const inversion = dib({
-      width: 2, height: 1, bits: 1, colors: [0, 0, 0, 0, 255, 255, 255, 0], colorsUsed: 2,
-      pixelRows: [0x80, 0, 0, 0], maskRows: [0x80, 0, 0, 0],
-    });
-    expect(() => decodeCur(curFile(inversion, 2, 1))).toThrow(expect.objectContaining({ code: 'unrepresentableInversion' }));
+  test('inverting pixels (AND=1, XOR!=0) are approximated as opaque black; AND=1 with XOR black stays transparent', () => {
+    // Intentional deviation from Swift, which rejects the cursor (arrow fallback) so the I-beam stays visible.
+    const palette = [0, 0, 0, 0, 255, 255, 255, 0];
+    const inversion = dib({ width: 2, height: 1, bits: 1, colors: palette, colorsUsed: 2, pixelRows: [0x80, 0, 0, 0], maskRows: [0x80, 0, 0, 0] });
+    expect(decodeCur(curFile(inversion, 2, 1)).rgba).toEqual(rgba(0, 0, 0, 255, 0, 0, 0, 255));
+    // white XOR + AND=1 -> inverted (black); black XOR + AND=1 -> transparent; black XOR + AND=0 -> opaque black.
+    const mixed = dib({ width: 3, height: 1, bits: 1, colors: palette, colorsUsed: 2, pixelRows: [0x80, 0, 0, 0], maskRows: [0xc0, 0, 0, 0] });
+    expect(decodeCur(curFile(mixed, 3, 1)).rgba).toEqual(rgba(0, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0, 255));
   });
 
   test('geometry mismatch (DIB width 4096 in a 2x2 entry) and unknown resources throw', () => {

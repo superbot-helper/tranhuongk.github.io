@@ -10,7 +10,6 @@ export type CurDecodeErrorCode =
   | 'unsafeGeometry'
   | 'unsupportedFormat'
   | 'malformedDIB'
-  | 'unrepresentableInversion'
   | 'pngRequiresDecoder'
   | 'pngDecodeFailed';
 
@@ -161,9 +160,17 @@ function decodeUncompressedDIB(bytes: Uint8Array, width: number, height: number)
         if (usesAlpha) alpha = bytes[offset + 3]!;
       }
       if (!usesAlpha && (bytes[maskRow + (x >> 3)]! & (0x80 >> (x % 8))) !== 0) {
-        // AND=1 with XOR!=0 inverts the desktop (e.g. an I-beam): not a static image.
-        if (blue !== 0 || green !== 0 || red !== 0) throw new CurDecodeError('unrepresentableInversion');
-        alpha = 0;
+        // AND=1: XOR black leaves the desktop (transparent). XOR!=0 inverts it (e.g. an I-beam);
+        // a static sprite cannot, so it is approximated as opaque black. This intentionally
+        // deviates from Swift, which rejects the cursor and shows the arrow.
+        const inverted = blue !== 0 || green !== 0 || red !== 0;
+        if (inverted) {
+          blue = 0;
+          green = 0;
+          red = 0;
+        } else {
+          alpha = 0;
+        }
       }
       const o = (y * width + x) * 4;
       out[o] = alpha === 0 ? 0 : red;
