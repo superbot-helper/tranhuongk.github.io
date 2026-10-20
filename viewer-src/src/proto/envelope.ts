@@ -1,6 +1,7 @@
 // Port of UltraViewerProtocol/RelayEnvelope.swift (RelayIPv4Address, RelayEnvelope,
 // RelayKeepalive, RelayHTTPPreamble, RelayHTTPPreambleDecoder).
 // DirectPeerEnvelope is not ported: the web viewer has no LAN direct path.
+import { commandCipher } from './crypto';
 
 function makeError<C extends string>(name: string) {
   return class extends Error {
@@ -102,15 +103,13 @@ export function keepaliveRelayEnvelope(): Uint8Array {
   return encodeSystem(new TextEncoder().encode('ping'));
 }
 
-// RelayKeepalive.commandEnvelope() encrypts "2" with LegacyCommandCipher.desktopServerCommands
-// (3DES-CBC, static key/IV derived from a bundled constant), so the ciphertext is a constant.
-// Bytes are the independent OpenSSL fixture asserted in RelayEnvelopeTests.swift; envelope.test.ts
-// re-derives them with node:crypto. Replace with crypto.ts once LegacyCommandCipher is ported.
-const KEEPALIVE_COMMAND_CIPHERTEXT = [0x2d, 0x93, 0x29, 0x71, 0xdd, 0x9d, 0xcb, 0x2d];
-
-/** `RelayKeepalive.commandEnvelope()`: system envelope, explicit flag false, encrypted "2". */
+/**
+ * `RelayKeepalive.commandEnvelope()`: system envelope, explicit flag false, ASCII "2" encrypted with
+ * `LegacyCommandCipher.desktopServerCommands`. envelope.test.ts checks the bytes against the
+ * independent OpenSSL fixture from RelayEnvelopeTests.swift.
+ */
 export function keepaliveCommandEnvelope(): Uint8Array {
-  return encodeSystem(new Uint8Array(KEEPALIVE_COMMAND_CIPHERTEXT), false);
+  return encodeSystem(commandCipher.encrypt(new TextEncoder().encode('2')), false);
 }
 
 const HOST_PATTERN = /^[\x21-\x7e]+$/;
