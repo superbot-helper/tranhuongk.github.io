@@ -6,6 +6,7 @@
 // `inputPermission(true)` after it.
 import { DEFAULT_DISPLAY_NAME } from '../proto/client-defaults';
 import { monitorRegion, type QualityPreset, type RemoteCommand } from '../proto/commands';
+import { cursorShapeRequest } from '../proto/cursor';
 import type { ScreenBitmap } from '../proto/screen-renderer';
 import { createIdentity, forgetDevice, IDENTITY_STORAGE_KEY, loadIdentity, saveIdentity, type ClientIdentity } from '../session/identity';
 import { createFrameScheduler } from '../session/latest-frame';
@@ -18,6 +19,7 @@ import {
   type SessionPhase,
 } from '../session/relay-session';
 import { connectFormError, formatStats, loadToken, mountDiagnostics, readStorage, REASONS, saveToken } from '../spike/diagnostics';
+import { CursorLayer } from './cursor-layer';
 import { DesktopInput } from './input';
 import { ScreenView, type Crop, type ScaleMode } from './screen';
 import { createToolbar, type SpecialKey } from './toolbar';
@@ -74,6 +76,7 @@ const LAYOUT = `
     <p id="notice" role="alert" hidden></p>
     <div id="viewport" class="viewport">
       <canvas id="screen" width="16" height="9"></canvas>
+      <canvas id="cursor-layer" aria-hidden="true"></canvas>
       <textarea id="keyboard-input" aria-label="Bàn phím gửi tới máy Windows" autocomplete="off" autocapitalize="off"
         autocorrect="off" spellcheck="false" tabindex="-1"></textarea>
       <div id="composition" class="composition" aria-hidden="true" hidden></div>
@@ -135,7 +138,34 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
   let clock: ReturnType<typeof setInterval> | null = null;
 
   const screenView = new ScreenView(canvas, viewport);
-  const draw = createFrameScheduler<ScreenBitmap>((bitmap) => screenView.draw(bitmap), deps.schedule);
+  // Remote pointer overlay; hides the browser cursor (controlling) only once a real shape is known.
+  let cursorKnown = false;
+  let controlActive = false;
+  const updateControlling = () => viewport.classList.toggle('controlling', controlActive && cursorKnown);
+  const cursorLayer = new CursorLayer(
+    $<HTMLCanvasElement>('cursor-layer'),
+    (hash) => {
+      session?.send(cursorShapeRequest(hash)).catch((e: unknown) => {
+        if (session?.phase !== 'closed') log(`Hỏi hình con trỏ lỗi: ${describe(e)}`);
+      });
+    },
+    {
+      schedule: deps.schedule,
+      onKnownChange: (known) => {
+        cursorKnown = known;
+        updateControlling();
+      },
+    },
+  );
+  /** The overlay follows the screen canvas box, frame size, crop and scale. */
+  const syncCursorView = () => cursorLayer.setView(screenView.view());
+  const draw = createFrameScheduler<ScreenBitmap>((bitmap) => {
+    screenView.draw(bitmap);
+    syncCursorView();
+  }, deps.schedule);
+  const resizeObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(syncCursorView) : null;
+  resizeObserver?.observe(viewport);
+  resizeObserver?.observe(canvas);
   const input = new DesktopInput({
     canvas,
     textarea,
@@ -163,7 +193,10 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
         if (on) input.focusKeyboard();
       },
       monitor: (index) => selectMonitor(index),
-      scale: (mode: ScaleMode) => screenView.setScale(mode),
+      scale: (mode: ScaleMode) => {
+        screenView.setScale(mode);
+        syncCursorView();
+      },
       quality: (preset: QualityPreset) => command({ type: 'quality', preset }, false),
       wallpaper: (hidden) => command({ type: 'wallpaper', visible: !hidden }, true),
       special: (key: SpecialKey) => {
@@ -207,8 +240,9 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     if (overflowNotice) notices.push(OVERFLOW_NOTICE);
     noticeEl.textContent = notices.join(' · ');
     noticeEl.hidden = notices.length === 0;
-    // Task 6 hides the browser cursor (cursor:none) while controlling with a remote cursor shown.
-    viewport.classList.toggle('controlling', active);
+    // The browser cursor is hidden (cursor:none) only while controlling AND a remote shape is known.
+    controlActive = active;
+    updateControlling();
   }
 
   function cropFor(index: number): Crop | null {
@@ -229,6 +263,7 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     const crop = cropFor(index);
     selectedMonitor = crop ? index : 0;
     screenView.setCrop(crop);
+    syncCursorView();
     if (peer) toolbar.setMonitors(peer.monitors, selectedMonitor);
   }
 
@@ -287,6 +322,10 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     selectedMonitor = keep;
     toolbar.setMonitors(next.monitors, keep);
     screenView.setCrop(cropFor(keep));
+    syncCursorView();
+    // Shapes requested before a re-login may never be answered: ask again if still needed.
+    if (!first) cursorLayer.clearPending();
+    cursorLayer.setVisible(true);
     if (first) {
       password.value = '';
       showConnected(true);
@@ -299,6 +338,8 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     input.stop();
     draw.clear();
     screenView.forget();
+    cursorLayer.setVisible(false);
+    cursorLayer.reset();
     peer = null;
     controlAllowed = false;
     overflowNotice = false;
@@ -377,7 +418,7 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
               draw.push(e.bitmap);
               break;
             case 'cursor':
-              // Remote cursor overlay: Task 6.
+              cursorLayer.onEvent(e.event);
               break;
             case 'closed':
               onClosed(e.reason);
@@ -415,6 +456,8 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
   return {
     destroy() {
       input.detach();
+      resizeObserver?.disconnect();
+      cursorLayer.dispose();
       if (clock !== null) clearInterval(clock);
       document.removeEventListener('fullscreenchange', onFullscreenChange);
       document.removeEventListener('visibilitychange', onVisibility);

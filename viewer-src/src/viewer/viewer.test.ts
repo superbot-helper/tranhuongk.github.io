@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import type { RemoteCommand, RemoteMonitor } from '../proto/commands';
 import { packedPosition } from '../proto/mouse';
 import type { ConnectOptions, Peer, SessionDiagnostics, SessionEvent, SessionPhase } from '../session/relay-session';
+import { curFile, dib } from './cur-test-utils';
 import { mountViewer, type ViewerHandle, type ViewerSession } from './viewer';
 
 // The jsdom (web) transform refuses the bundled *.pem?raw trust anchors (Vite fs.deny); the
@@ -527,5 +528,111 @@ describe('desktop viewer page', () => {
     expect($('#toolbar').hidden).toBe(true);
     expect($('#status').textContent).toBe('Máy Windows đã kết thúc phiên.');
     expect($('#diagnostics').tagName).toBe('DETAILS');
+  });
+  describe('remote cursor overlay', () => {
+    const cur = () => curFile(dib({ width: 2, height: 2, bits: 32, pixelRows: new Array<number>(16).fill(255), maskRows: new Array<number>(8).fill(0) }), 2, 2);
+    const requests = () => session.sent.filter((m) => typeof m === 'string' && m.startsWith('4|||'));
+    const viewport = () => $<HTMLDivElement>('#viewport');
+    const overlayContext = () => {
+      const context = { setTransform: vi.fn(), clearRect: vi.fn(), drawImage: vi.fn(), putImageData: vi.fn(), imageSmoothingEnabled: true };
+      vi.stubGlobal('ImageData', class { constructor(readonly data: unknown, readonly width: number, readonly height: number) {} });
+      vi.mocked(HTMLCanvasElement.prototype.getContext).mockReturnValue(context as never);
+      return context;
+    };
+    const knownShape = (hash = 5) => {
+      session.emit({ type: 'cursor', event: { type: 'select', hash } });
+      session.emit({ type: 'cursor', event: { type: 'shape', hash, cur: cur() } });
+      session.emit({ type: 'cursor', event: { type: 'position', x: 200, y: 100 } });
+    };
+
+    afterEach(() => vi.unstubAllGlobals());
+
+    test('a #cursor-layer canvas sits over the screen canvas and ignores the pointer', () => {
+      const overlay = $<HTMLCanvasElement>('#cursor-layer');
+      expect(overlay.previousElementSibling).toBe(canvas);
+      expect(overlay.style.pointerEvents).toBe('none');
+      expect(overlay.style.position).toBe('absolute');
+    });
+
+    test('an unknown shape is requested once with 4|||hash until it arrives', async () => {
+      connect();
+      session.emit({ type: 'cursor', event: { type: 'select', hash: -77 } });
+      session.emit({ type: 'cursor', event: { type: 'select', hash: -77 } });
+      await settle();
+      expect(requests()).toEqual(['4|||-77']);
+      session.emit({ type: 'cursor', event: { type: 'shape', hash: -77, cur: cur() } });
+      session.emit({ type: 'cursor', event: { type: 'select', hash: -77 } });
+      await settle();
+      expect(requests()).toEqual(['4|||-77']);
+    });
+
+    test('an unanswered request is repeated after a screen refresh re-login and after a reconnect', async () => {
+      connect();
+      session.emit({ type: 'cursor', event: { type: 'select', hash: 9 } });
+      session.emit({ type: 'accepted', peer: peer() });
+      session.emit({ type: 'cursor', event: { type: 'select', hash: 9 } });
+      await settle();
+      expect(requests()).toEqual(['4|||9', '4|||9']);
+      session.emit({ type: 'closed', reason: 'partnerEnded' });
+      connect();
+      session.emit({ type: 'cursor', event: { type: 'select', hash: 9 } });
+      await settle();
+      expect(requests()).toHaveLength(3);
+    });
+
+    test('the browser cursor is hidden only while controlling with a known remote shape', () => {
+      connect();
+      session.emit({ type: 'cursor', event: { type: 'position', x: 200, y: 100 } });
+      expect(viewport().classList.contains('controlling')).toBe(false);
+      knownShape();
+      expect(viewport().classList.contains('controlling')).toBe(true);
+      $<HTMLButtonElement>('#control-toggle').click();
+      expect(viewport().classList.contains('controlling')).toBe(false);
+      $<HTMLButtonElement>('#control-toggle').click();
+      expect(viewport().classList.contains('controlling')).toBe(true);
+      session.emit({ type: 'inputPermission', allowed: false });
+      expect(viewport().classList.contains('controlling')).toBe(false);
+      session.emit({ type: 'closed', reason: 'partnerEnded' });
+      expect(viewport().classList.contains('controlling')).toBe(false);
+    });
+
+    test('view-only users still see the remote pointer drawn at the scaled position', () => {
+      const context = overlayContext();
+      connect(peer({ allowsRemoteInput: false }));
+      session.emit({ type: 'cursor', event: { type: 'position', x: 200, y: 100 } });
+      // 1920x1080 into 960x540: scale 0.5; the fallback arrow has its hotspot at 0,0.
+      expect(context.drawImage).toHaveBeenLastCalledWith(expect.anything(), 100, 50, 6, 9.5);
+      expect(viewport().classList.contains('controlling')).toBe(false);
+      expect($<HTMLCanvasElement>('#cursor-layer').style.width).toBe('960px');
+    });
+
+    test('choosing another monitor moves or hides the pointer by crop and virtual origin', () => {
+      const context = overlayContext();
+      const monitors: RemoteMonitor[] = [
+        { index: 1, left: -1920, top: 0, right: 0, bottom: 1080 },
+        { index: 2, left: 0, top: 0, right: 1920, bottom: 1080 },
+      ];
+      connect(peer({ width: 3840, height: 1080, virtualLeft: -1920, monitors }));
+      session.emit({ type: 'cursor', event: { type: 'position', x: 100, y: 100 } });
+      const select = $<HTMLSelectElement>('#monitor');
+      select.value = '2';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      expect(context.drawImage).toHaveBeenLastCalledWith(expect.anything(), 50, 50, 6, 9.5);
+      const calls = context.drawImage.mock.calls.length;
+      select.value = '1';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      expect(context.drawImage.mock.calls.length).toBe(calls); // x=100 is on monitor 2: hidden on monitor 1
+    });
+
+    test('nothing is drawn before a position arrives and after the session ends', () => {
+      const context = overlayContext();
+      connect();
+      expect(context.drawImage).not.toHaveBeenCalled(); // accepted, but no remote position yet
+      session.emit({ type: 'cursor', event: { type: 'position', x: 200, y: 100 } });
+      expect(context.drawImage).toHaveBeenCalledTimes(1);
+      session.emit({ type: 'closed', reason: null });
+      session.emit({ type: 'cursor', event: { type: 'position', x: 300, y: 100 } });
+      expect(context.drawImage).toHaveBeenCalledTimes(1);
+    });
   });
 });

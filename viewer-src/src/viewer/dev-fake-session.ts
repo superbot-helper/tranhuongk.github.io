@@ -4,7 +4,9 @@
 // (monitor 1 left of the primary, negative coordinates), marks where the last pointer
 // message landed, and lists what the page sent. `?fake&old` = UltraViewer 6.2.12 (no
 // keyboard packets), `?fake&viewonly` = host starts in view-only. `window.uvFake` exposes
-// the sent log and `permission(allowed)` / `end()` to simulate commands 49 and 27.
+// the sent log and `permission(allowed)` / `end()` to simulate commands 49 and 27. The remote
+// pointer follows the last mouse message: shape 1001 (red DIB arrow) while the button is up,
+// 1002 (green PNG-in-CUR ring) while it is down; shapes are only sent when the page asks (`4|||hash`).
 import { commandPayload, type RemoteCommand, type RemoteMonitor } from '../proto/commands';
 import type { ScreenBitmap } from '../proto/screen-renderer';
 import {
@@ -24,6 +26,60 @@ const MONITORS: RemoteMonitor[] = [
   { index: 2, left: 0, top: 0, right: MONITOR_W, bottom: MONITOR_H },
 ];
 const VIRTUAL_LEFT = -MONITOR_W;
+const SHAPE_ARROW = 1001;
+const SHAPE_RING = 1002;
+
+/** One-image CUR file around an image resource (directory entry at 6, resource at 22). */
+function curFromResource(resource: Uint8Array, size: number, hotX: number, hotY: number): Uint8Array {
+  const out = new Uint8Array(22 + resource.length);
+  const v = new DataView(out.buffer);
+  v.setUint16(2, 2, true);
+  v.setUint16(4, 1, true);
+  out[6] = size;
+  out[7] = size;
+  v.setUint16(10, hotX, true);
+  v.setUint16(12, hotY, true);
+  v.setUint32(14, resource.length, true);
+  v.setUint32(18, 22, true);
+  out.set(resource, 22);
+  return out;
+}
+
+/** 16x16 32-bit DIB cursor: a red triangle whose tip is the hotspot (0,0). */
+function arrowCur(): Uint8Array {
+  const size = 16;
+  const maskStride = 4;
+  const dib = new Uint8Array(40 + size * size * 4 + maskStride * size);
+  const v = new DataView(dib.buffer);
+  v.setUint32(0, 40, true);
+  v.setInt32(4, size, true);
+  v.setInt32(8, size * 2, true);
+  v.setUint16(12, 1, true);
+  v.setUint16(14, 32, true);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const o = 40 + ((size - 1 - y) * size + x) * 4; // bottom-up rows, BGRA
+      if (x <= y * 0.7 && x < 11) dib.set([40, 40, 230, 255], o);
+    }
+  }
+  return curFromResource(dib, size, 0, 0);
+}
+
+/** 24x24 PNG cursor: a green ring centred on the hotspot (12,12). */
+async function ringCur(): Promise<Uint8Array> {
+  const canvas = document.createElement('canvas');
+  canvas.width = 24;
+  canvas.height = 24;
+  const ctx = canvas.getContext('2d')!;
+  ctx.strokeStyle = '#34c759';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(12, 12, 9, 0, Math.PI * 2);
+  ctx.stroke();
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
+  if (!blob) throw new Error('toBlob failed');
+  return curFromResource(new Uint8Array(await blob.arrayBuffer()), 24, 12, 12);
+}
 
 interface FakeHooks {
   sent: string[];
@@ -109,8 +165,11 @@ class DevFakeSession implements ViewerSession {
       if (msg === 0x200) this.pointer = { ...this.pointer, x: Number(mouse[3]), y: Number(mouse[4]) };
       if (msg === 0x201 || msg === 0x204 || msg === 0x207) this.pointer.down = true;
       if (msg === 0x202 || msg === 0x205 || msg === 0x208) this.pointer.down = false;
+      this.emitCursor();
       this.render();
     }
+    const request = /^4\|\|\|(-?\d+)$/.exec(text);
+    if (request) setTimeout(() => void this.sendShape(Number(request[1])), 40);
   }
 
   async sendCommand(c: RemoteCommand, opts: { requiresControl: boolean }): Promise<void> {
@@ -141,8 +200,29 @@ class DevFakeSession implements ViewerSession {
     this.state = 'active';
     this.diag.peerAccepted = true;
     this.on({ type: 'accepted', peer: this.peer });
+    this.shown = 0;
+    this.emitCursor();
     this.timer ??= setInterval(() => this.render(), 1000);
     this.render();
+  }
+
+  private shown = 0;
+
+  /** Commands 3 (selection, on change) and 28 (position) as the Windows host would send them. */
+  private emitCursor(): void {
+    const hash = this.pointer.down ? SHAPE_RING : SHAPE_ARROW;
+    if (hash !== this.shown) {
+      this.shown = hash;
+      this.on({ type: 'cursor', event: { type: 'select', hash } });
+    }
+    this.on({ type: 'cursor', event: { type: 'position', x: this.pointer.x, y: this.pointer.y } });
+  }
+
+  private async sendShape(hash: number): Promise<void> {
+    if (this.state !== 'active') return;
+    if (hash !== SHAPE_ARROW && hash !== SHAPE_RING) return;
+    const cur = hash === SHAPE_ARROW ? arrowCur() : await ringCur();
+    if (this.state === 'active') this.on({ type: 'cursor', event: { type: 'shape', hash, cur } });
   }
 
   private finish(reason: 'partnerEnded' | null): void {
