@@ -54,6 +54,7 @@ describe('chat panel', () => {
       typing: async (t) => {
         typing.push(t);
       },
+      attach: () => {},
       copy: () => {},
       changed: (s) => changes.push(s),
       closed: () => closed++,
@@ -204,7 +205,7 @@ describe('chat panel', () => {
     panel.dispose();
     root.innerHTML = '';
     panel = createChatPanel(root, {
-      send: async () => {}, typing: async () => {}, changed: () => {}, closed: () => {},
+      send: async () => {}, typing: async () => {}, changed: () => {}, closed: () => {}, attach: () => {},
       copy: (t) => copied.push(t),
     });
     panel.setClipboardHistory([

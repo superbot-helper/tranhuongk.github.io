@@ -7,6 +7,7 @@
 // nothing typed here is routed to Windows. Content is rendered with textContent only, never logged.
 import { ChatError } from '../proto/chat';
 import type { ClipboardEntry } from './clipboard-sync';
+import { attachDropZone } from './file-transfers';
 
 /** UI limit of a chat message (Swift 16,384 UTF-16 units). */
 export const MAX_CHAT_UNITS = 16_384;
@@ -27,6 +28,8 @@ export interface ChatPanelHandlers {
   send(text: string): Promise<void>;
   /** session.sendTyping. */
   typing(typing: boolean): Promise<void>;
+  /** Files chosen with the 📎 button or dropped on the panel: offer them to the Windows machine. */
+  attach(files: File[]): void;
   /** Copy a clipboard-history entry to this device (called inside the click). */
   copy(text: string): void;
   /** Open state or unread count changed (toolbar button and badge). */
@@ -43,6 +46,8 @@ export interface ChatPanel {
   close(): void;
   setAvailable(available: boolean, reason?: string): void;
   receive(text: string): void;
+  /** Put a file card in the transcript; an incoming offer counts as unread while the panel is closed. */
+  addCard(card: HTMLElement, incoming: boolean): void;
   setPeerTyping(typing: boolean): void;
   setClipboardHistory(entries: readonly ClipboardEntry[]): void;
   /** Session ended: hidden (without `closed`), transcript, draft, unread and typing state cleared. */
@@ -97,6 +102,8 @@ export function createChatPanel(root: HTMLElement, h: ChatPanelHandlers): ChatPa
       <p class="chat-unavailable" hidden></p>
       <p class="chat-error" role="alert" hidden></p>
       <div class="chat-compose">
+        <button type="button" class="chat-attach" aria-label="Gửi file sang máy Windows" title="Gửi file (hoặc kéo file thả vào đây)">📎</button>
+        <input type="file" class="chat-file" multiple hidden tabindex="-1" />
         <textarea class="chat-input" rows="2" maxlength="${MAX_CHAT_UNITS}" placeholder="Nhập tin nhắn (Enter gửi, Shift+Enter xuống dòng)"
           aria-label="Tin nhắn chat" autocomplete="off"></textarea>
         <button type="button" class="chat-send">Gửi</button>
@@ -114,12 +121,15 @@ export function createChatPanel(root: HTMLElement, h: ChatPanelHandlers): ChatPa
   const errorEl = $<HTMLParagraphElement>('.chat-error');
   const input = $<HTMLTextAreaElement>('.chat-input');
   const sendButton = $<HTMLButtonElement>('.chat-send');
+  const attachButton = $<HTMLButtonElement>('.chat-attach');
+  const fileInput = $<HTMLInputElement>('.chat-file');
   const chatPane = $<HTMLDivElement>('.chat-pane-chat');
   const clipPane = $<HTMLDivElement>('.chat-pane-clipboard');
   const clipList = $<HTMLOListElement>('.clip-list');
   const clipEmpty = $<HTMLParagraphElement>('.clip-empty');
   const tabs = [...root.querySelectorAll<HTMLButtonElement>('.chat-tab')];
 
+  attachButton.disabled = true;
   let open = false;
   let unread = 0;
   let available = false;
@@ -254,6 +264,18 @@ export function createChatPanel(root: HTMLElement, h: ChatPanelHandlers): ChatPa
     sendDraft();
   });
   sendButton.addEventListener('click', () => sendDraft());
+  attachButton.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', () => {
+    const files = [...(fileInput.files ?? [])];
+    // Clear the selection so choosing the same file again fires `change`.
+    fileInput.value = '';
+    if (available && files.length > 0) h.attach(files);
+  });
+  const detachDrop = attachDropZone(root, {
+    enabled: () => available,
+    hint: 'Thả file để gửi sang máy Windows',
+    onFiles: (files) => h.attach(files),
+  });
   for (const t of tabs) t.addEventListener('click', () => selectTab(t.dataset.tab as ChatTab));
   $<HTMLButtonElement>('.chat-close').addEventListener('click', () => panel.close());
 
@@ -279,6 +301,7 @@ export function createChatPanel(root: HTMLElement, h: ChatPanelHandlers): ChatPa
       available = next;
       input.disabled = !next;
       sendButton.disabled = !next || sending;
+      attachButton.disabled = !next;
       unavailableEl.textContent = next ? '' : (reason ?? '');
       unavailableEl.hidden = next || !reason;
       if (!next) {
@@ -291,6 +314,15 @@ export function createChatPanel(root: HTMLElement, h: ChatPanelHandlers): ChatPa
       setPeerTyping(false);
       append(text, false);
       if (!open) {
+        unread++;
+        report();
+      }
+    },
+    addCard(card, incoming) {
+      const stick = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 24;
+      transcript.append(card);
+      if (stick || !incoming) transcript.scrollTop = transcript.scrollHeight;
+      if (incoming && !open) {
         unread++;
         report();
       }
@@ -337,6 +369,7 @@ export function createChatPanel(root: HTMLElement, h: ChatPanelHandlers): ChatPa
       generation++;
       cancelTyping();
       setPeerTyping(false);
+      detachDrop();
     },
   };
   return panel;

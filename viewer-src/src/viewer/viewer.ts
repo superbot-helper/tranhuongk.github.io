@@ -4,7 +4,8 @@
 // The permission is re-read from `peer.allowsRemoteInput` on every `accepted`, because a screen
 // refresh (or host command 23) re-initializes with `inputPermission(false)` before it and no
 // `inputPermission(true)` after it.
-// Chat (panel + unread badge) and opt-in clipboard sharing work while the session's tool gate is
+// Chat (panel + unread badge), file transfer (cards in the chat, drop zone on the screen) and
+// opt-in clipboard sharing work while the session's tool gate is
 // open (`tools` events), independent of control; pasting into the controlled screen uploads the
 // clipboard (when sharing is on) and types Ctrl+V on Windows.
 import { DEFAULT_DISPLAY_NAME } from '../proto/client-defaults';
@@ -25,13 +26,14 @@ import { connectFormError, formatStats, loadToken, mountDiagnostics, readStorage
 import { createChatPanel } from './chat-panel';
 import { ClipboardSync } from './clipboard-sync';
 import { CursorLayer } from './cursor-layer';
+import { attachDropZone, createFileTransfers, type FileTransferSession } from './file-transfers';
 import { DesktopInput } from './input';
 import { ScreenView, type Crop, type ScaleMode } from './screen';
 import { createToolbar, type SpecialKey } from './toolbar';
 import { attachTouch, ViewZoom } from './touch';
 
 /** The RelaySession surface the page uses (a fake one in tests and in the dev-only demo). */
-export interface ViewerSession {
+export interface ViewerSession extends FileTransferSession {
   readonly phase: SessionPhase;
   readonly diagnostics: Readonly<SessionDiagnostics>;
   connect(o: ConnectOptions, on: (e: SessionEvent) => void): void;
@@ -65,7 +67,8 @@ const OLD_PEER_NOTICE = 'Máy Windows dùng UltraViewer cũ (< 6.2.13): chỉ đ
 const VIEW_ONLY_NOTICE = 'Máy Windows đang để chế độ chỉ xem: chuột và bàn phím không được gửi.';
 /** After a trackpad move, host pointer positions (older, by the round trip) are not drawn for this long. */
 const LOCAL_POINTER_HOLD_MS = 500;
-const TOOLS_UNAVAILABLE = 'Chat và clipboard dùng được khi đã kết nối xong với máy Windows.';
+const TOOLS_UNAVAILABLE = 'Chat, file và clipboard dùng được khi đã kết nối xong với máy Windows.';
+const DROP_HINT = 'Thả file để gửi sang máy Windows';
 /** "1" when clipboard sharing should start on (stored only with "Nhớ trên thiết bị này"). */
 export const CLIPBOARD_STORAGE_KEY = 'uvweb.clipboard';
 const OVERFLOW_NOTICE = 'Hàng đợi chuột/bàn phím bị đầy: đã thả mọi phím và nút, Điều khiển đã tắt. Bật lại để tiếp tục.';
@@ -379,11 +382,28 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
   const chatPanel = createChatPanel(chatEl, {
     send: (text) => (session ? session.sendChat(text) : Promise.reject(new RelaySessionError('notConnected'))),
     typing: (typing) => session?.sendTyping(typing) ?? Promise.resolve(),
+    attach: (files) => fileTransfers.send(files),
     copy: (text) => clipboardSync.copy(text),
     changed: (state) => toolbar.setChat(state),
     closed: () => focusUnlessTouch(),
   });
+  const fileTransfers = createFileTransfers({
+    session: () => session,
+    addCard: (card, incoming) => chatPanel.addCard(card, incoming),
+  });
   let toolsAvailable = false;
+  // Files dropped on the screen are offered like those dropped on the chat; a drag produces no
+  // pointer events, so nothing reaches the remote desktop.
+  const detachScreenDrop = attachDropZone(viewport, {
+    enabled: () => toolsAvailable,
+    hint: DROP_HINT,
+    overlayParent: stage,
+    onFiles: (files) => {
+      placeChat();
+      chatPanel.open('chat', false);
+      fileTransfers.send(files);
+    },
+  });
 
   /** Applies the preference to the session (only while the tool gate is open). */
   function applyClipboard(changed: boolean): void {
@@ -543,6 +563,7 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     refreshControl();
     chatPanel.reset();
     clipboardSync.reset();
+    fileTransfers.reset();
     setTools(false);
     if (clock !== null) clearInterval(clock);
     clock = null;
@@ -592,6 +613,7 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     toolbar.reset();
     chatPanel.reset();
     clipboardSync.reset();
+    fileTransfers.clear();
     setTools(false);
     const size = deps.screenSize?.() ?? {
       width: Math.round(screen.width * devicePixelRatio),
@@ -635,6 +657,9 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
               break;
             case 'clipboard':
               clipboardSync.receive(e.text);
+              break;
+            case 'file':
+              fileTransfers.handle(e.event);
               break;
             case 'tools':
               setTools(e.available);
@@ -691,6 +716,8 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
       cursorLayer.dispose();
       chatPanel.dispose();
       clipboardSync.dispose();
+      detachScreenDrop();
+      fileTransfers.dispose();
       if (clock !== null) clearInterval(clock);
       document.removeEventListener('fullscreenchange', onFullscreenChange);
       document.removeEventListener('visibilitychange', onVisibility);

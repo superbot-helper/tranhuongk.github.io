@@ -4,6 +4,7 @@ import { expect } from 'vitest';
 import { chatMessagePayload } from '../proto/chat';
 import { clipboardPayload } from '../proto/clipboard';
 import type { RemoteCommand } from '../proto/commands';
+import type { FileSink, FileSource } from '../session/file-engine';
 import {
   RelaySessionError,
   type ConnectOptions,
@@ -40,6 +41,14 @@ export class TestSession implements ViewerSession {
   options: ConnectOptions | null = null;
   tools = false;
   clipboardAllowed = false;
+  /** Files offered with sendFile (the id is `f1`, `f2`, ...). */
+  readonly offered: Array<{ id: string; name: string; source: FileSource }> = [];
+  readonly accepted = new Map<string, FileSink>();
+  readonly canceledFiles: string[] = [];
+  /** Set to make the next sendFile throw. */
+  failSendFile: Error | null = null;
+  /** Set to make the next acceptFile reject. */
+  failAcceptFile: Error | null = null;
   /** Set to make the next sendChat reject. */
   failChat: Error | null = null;
   /** Set to make the next sendClipboard reject (after recording the attempt). */
@@ -102,6 +111,32 @@ export class TestSession implements ViewerSession {
       this.failClipboard = null;
       throw e;
     }
+  }
+
+  sendFile(name: string, source: FileSource): string {
+    if (!this.tools) throw new RelaySessionError('toolsUnavailable');
+    if (this.failSendFile) {
+      const e = this.failSendFile;
+      this.failSendFile = null;
+      throw e;
+    }
+    const id = `f${this.offered.length + 1}`;
+    this.offered.push({ id, name, source });
+    return id;
+  }
+
+  async acceptFile(id: string, sink: FileSink): Promise<void> {
+    if (!this.tools) throw new RelaySessionError('toolsUnavailable');
+    if (this.failAcceptFile) {
+      const e = this.failAcceptFile;
+      this.failAcceptFile = null;
+      throw e;
+    }
+    this.accepted.set(id, sink);
+  }
+
+  async cancelFile(id: string): Promise<void> {
+    this.canceledFiles.push(id);
   }
 
   close(): void {
