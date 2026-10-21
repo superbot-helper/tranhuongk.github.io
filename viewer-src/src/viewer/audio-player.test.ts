@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { AudioPlayer } from './audio-player';
+import { AudioPlayer, AudioPlayerError } from './audio-player';
 import { WORKLET_PROCESSOR_NAME } from './audio-queue';
 
 class FakeParam {
@@ -46,7 +46,10 @@ class FakeContext {
   static instances: FakeContext[] = [];
   static rejectSampleRate = false;
   static moduleDelay: Promise<void> | undefined;
+  static staySuspended = false;
   state = 'suspended';
+  resumeCalls = 0;
+  modulesAtFirstResume = -1;
   destination = {};
   modules: string[] = [];
   gains: FakeGain[] = [];
@@ -67,7 +70,8 @@ class FakeContext {
     return g;
   }
   async resume(): Promise<void> {
-    this.state = 'running';
+    if (this.resumeCalls++ === 0) this.modulesAtFirstResume = this.modules.length;
+    if (!FakeContext.staySuspended) this.state = 'running';
   }
   async close(): Promise<void> {
     this.closed = true;
@@ -79,6 +83,7 @@ beforeEach(() => {
   FakeContext.instances = [];
   FakeContext.rejectSampleRate = false;
   FakeContext.moduleDelay = undefined;
+  FakeContext.staySuspended = false;
   FakeNode.last = undefined;
   vi.stubGlobal('AudioContext', FakeContext);
   vi.stubGlobal('AudioWorkletNode', FakeNode);
@@ -205,5 +210,56 @@ describe('AudioPlayer restart races', () => {
     expect(FakeContext.instances).toHaveLength(2);
     expect(FakeContext.instances[0]!.closed).toBe(true);
     expect(FakeContext.instances[1]!.closed).toBe(false);
+  });
+});
+
+describe('AudioPlayer autoplay / user gesture', () => {
+  test('resume() is requested synchronously in start(), before the worklet module loads', async () => {
+    let release!: () => void;
+    FakeContext.moduleDelay = new Promise((r) => (release = r));
+    const player = new AudioPlayer();
+    const started = player.start();
+    const ctx = FakeContext.instances[0]!;
+    expect(ctx.resumeCalls).toBe(1); // first tick, still inside the gesture
+    expect(ctx.modules).toHaveLength(0);
+    release();
+    await started;
+    expect(ctx.modulesAtFirstResume).toBe(0);
+    expect(player.running).toBe(true);
+  });
+
+  test('a context that stays suspended makes start() reject with AudioPlayerError(suspended)', async () => {
+    vi.useFakeTimers();
+    try {
+      FakeContext.staySuspended = true;
+      const player = new AudioPlayer();
+      const started = player.start();
+      const assertion = expect(started).rejects.toMatchObject({ name: 'AudioPlayerError', code: 'suspended' });
+      await vi.advanceTimersByTimeAsync(1500);
+      await assertion;
+      const ctx = FakeContext.instances[0]!;
+      expect(ctx.resumeCalls).toBeGreaterThanOrEqual(2); // retried after the module load
+      expect(ctx.closed).toBe(true);
+      expect(player.running).toBe(false);
+      await expect(started).rejects.toBeInstanceOf(AudioPlayerError);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('a later start() in a fresh gesture can succeed after a suspended failure', async () => {
+    vi.useFakeTimers();
+    try {
+      FakeContext.staySuspended = true;
+      const player = new AudioPlayer();
+      const failed = player.start().catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(await failed).toBeInstanceOf(AudioPlayerError);
+      FakeContext.staySuspended = false;
+      await player.start();
+      expect(player.running).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

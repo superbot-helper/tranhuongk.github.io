@@ -22,6 +22,21 @@ export interface AudioPlayerOptions {
   capFrames?: number;
 }
 
+export type AudioPlayerErrorCode = 'suspended';
+
+/** `suspended`: the browser kept the AudioContext suspended (no usable user gesture); ask the user to press again. */
+export class AudioPlayerError extends Error {
+  readonly code: AudioPlayerErrorCode;
+  constructor(code: AudioPlayerErrorCode) {
+    super(code);
+    this.name = 'AudioPlayerError';
+    this.code = code;
+  }
+}
+
+/** How long start() waits for a second resume() before reporting `suspended`. */
+const RESUME_TIMEOUT_MS = 1000;
+
 export class AudioPlayer {
   private readonly capFrames: number;
   private volume: AudioVolume = 1;
@@ -92,6 +107,8 @@ export class AudioPlayer {
   private async doStart(): Promise<void> {
     const generation = this.generation;
     const context = createContext();
+    // Safari only honours resume() inside the user gesture: request it before any await.
+    if (context.state !== 'running') void context.resume().catch(() => undefined);
     try {
       await context.audioWorklet.addModule(workletUrl);
       if (generation !== this.generation) throw new Error('stopped');
@@ -105,9 +122,9 @@ export class AudioPlayer {
       gain.gain.value = this.volume;
       node.connect(gain);
       gain.connect(context.destination);
-      // Not awaited: without a user gesture resume() stays pending, which must not wedge start().
-      if (context.state === 'suspended') void context.resume().catch(() => undefined);
+      if (context.state !== 'running') await resumeWithin(context, RESUME_TIMEOUT_MS);
       if (generation !== this.generation) throw new Error('stopped');
+      if (context.state !== 'running') throw new AudioPlayerError('suspended');
       this.context = context;
       this.node = node;
       this.gain = gain;
@@ -125,5 +142,18 @@ function createContext(): AudioContext {
     return new AudioContext({ sampleRate: AUDIO_SOURCE_RATE, latencyHint: 'interactive' });
   } catch {
     return new AudioContext({ latencyHint: 'interactive' });
+  }
+}
+
+/** resume() can stay pending forever without a gesture, so it must not be awaited unbounded. */
+async function resumeWithin(context: AudioContext, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, ms);
+  });
+  try {
+    await Promise.race([context.resume().catch(() => undefined), timeout]);
+  } finally {
+    clearTimeout(timer);
   }
 }
