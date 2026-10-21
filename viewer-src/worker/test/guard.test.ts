@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { isPublicIPv4, parseTarget, tokenFromProtocols, tokenValid } from '../src/guard';
+import { isPublicIPv4, parseTarget } from '../src/guard';
 
 describe('parseTarget', () => {
   test.each([
@@ -28,39 +28,5 @@ describe('parseTarget', () => {
     expect(parseTarget('146.59.55.107', '0443')).toBeNull();
     expect(parseTarget('146.59.55.107', '443 ')).toBeNull();
     expect(parseTarget(null, '443')).toBeNull();
-  });
-});
-
-describe('tokenFromProtocols', () => {
-  test('token parsing', () => {
-    expect(tokenFromProtocols('uvpipe, abc')).toBe('abc');
-    expect(tokenFromProtocols('abc')).toBeNull();
-    expect(tokenFromProtocols(null)).toBeNull();
-  });
-  test('tolerates spacing and order, rejects empty', () => {
-    expect(tokenFromProtocols('uvpipe,abc')).toBe('abc');
-    expect(tokenFromProtocols('abc, uvpipe')).toBe('abc');
-    expect(tokenFromProtocols('uvpipe, ')).toBeNull();
-    expect(tokenFromProtocols('uvpipe')).toBeNull();
-  });
-});
-
-describe('tokenValid', () => {
-  test('token check uses either secret, rejects empty', async () => {
-    const env = { TOKEN_A: 'a'.repeat(32), TOKEN_B: 'b'.repeat(32) };
-    expect(await tokenValid('a'.repeat(32), env)).toBe(true);
-    expect(await tokenValid('b'.repeat(32), env)).toBe(true);
-    expect(await tokenValid('c'.repeat(32), env)).toBe(false);
-    expect(await tokenValid('', { TOKEN_A: '' })).toBe(false);
-  });
-  test('unset secrets never match, even empty token', async () => {
-    expect(await tokenValid('', {})).toBe(false);
-    expect(await tokenValid('x', {})).toBe(false);
-    expect(await tokenValid('a'.repeat(32), { TOKEN_B: 'b'.repeat(32) })).toBe(false);
-  });
-  test('prefix / different length does not match', async () => {
-    const env = { TOKEN_A: 'a'.repeat(32) };
-    expect(await tokenValid('a'.repeat(31), env)).toBe(false);
-    expect(await tokenValid('a'.repeat(33), env)).toBe(false);
   });
 });

@@ -1,13 +1,11 @@
-// Production transport for RelaySession: WebSocket pipe through the Worker (token only in
-// Sec-WebSocket-Protocol) to ip:443, then in-browser TLS with SNI "ultraviewer" and the
-// certificate checked against `certName`.
+// Production transport for RelaySession: WebSocket pipe through the Worker (no token) to
+// ip:443, then in-browser TLS with SNI "ultraviewer" and the certificate checked against `certName`.
 import { openPipe as defaultOpenPipe, PipeError, type BytePipe, type PipeOptions } from '../net/pipe';
 import { openTls as defaultOpenTls, type TlsChannel, type TlsOptions } from '../net/tls';
 import type { RelaySessionDeps } from './relay-session';
 
 export interface WorkerChannelOptions {
   workerUrl: string;
-  token: string;
   /** Test hooks. */
   openPipe?: (o: PipeOptions) => Promise<BytePipe>;
   openTls?: (pipe: BytePipe, o: TlsOptions) => Promise<TlsChannel>;
@@ -19,7 +17,7 @@ export function workerChannelOpener(o: WorkerChannelOptions): RelaySessionDeps['
   // `signal` aborts only an attempt the session has abandoned (timeout); it is never fired
   // after this resolves. Every abandoned attempt closes its pipe, releasing the Worker lease.
   return async (ip, certName, signal) => {
-    const pipe = await openPipe({ workerUrl: o.workerUrl, token: o.token, ip, port: 443, signal });
+    const pipe = await openPipe({ workerUrl: o.workerUrl, ip, port: 443, signal });
     if (signal?.aborted) {
       pipe.close();
       throw new PipeError('aborted');

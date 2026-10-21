@@ -3,11 +3,6 @@
 export const SUBPROTOCOL = 'uvpipe';
 export const ALLOWED_PORT = 443;
 
-export interface TokenEnv {
-  TOKEN_A?: string;
-  TOKEN_B?: string;
-}
-
 const DOTTED_QUAD = /^(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})$/;
 
 function parseIPv4(ip: string): [number, number, number, number] | null {
@@ -45,37 +40,4 @@ export function parseTarget(
   if (port !== String(ALLOWED_PORT)) return null;
   if (!isPublicIPv4(ip)) return null;
   return { ip, port: ALLOWED_PORT };
-}
-
-/** Extracts the token from `Sec-WebSocket-Protocol: uvpipe, <token>`. */
-export function tokenFromProtocols(header: string | null): string | null {
-  if (!header) return null;
-  const parts = header.split(',').map((p) => p.trim());
-  if (!parts.includes(SUBPROTOCOL)) return null;
-  const token = parts.find((p) => p !== '' && p !== SUBPROTOCOL);
-  return token ?? null;
-}
-
-async function sha256(text: string): Promise<Uint8Array> {
-  const data = new TextEncoder().encode(text);
-  return new Uint8Array(await crypto.subtle.digest('SHA-256', data));
-}
-
-function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a[i]! ^ b[i]!;
-  return diff === 0;
-}
-
-/** Constant-time (over SHA-256 digests) comparison against both configured secrets. */
-export async function tokenValid(token: string, env: TokenEnv): Promise<boolean> {
-  if (token === '') return false;
-  const presented = await sha256(token);
-  let ok = false;
-  for (const secret of [env.TOKEN_A, env.TOKEN_B]) {
-    if (!secret) continue; // unset or empty secret never matches
-    ok = constantTimeEqual(presented, await sha256(secret)) || ok;
-  }
-  return ok;
 }

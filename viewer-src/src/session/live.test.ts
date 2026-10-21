@@ -1,9 +1,7 @@
-// LIVE check (ruling R3, Task 7): needs `npx wrangler dev` running in viewer-src/worker with a
-// dev token in worker/.dev.vars. Run: LIVE=1 npx vitest run src/session/live.test.ts
+// LIVE check (ruling R3, Task 7): needs `npx wrangler dev` running in viewer-src/worker (no token).
+// Run: LIVE=1 npx vitest run src/session/live.test.ts   (WORKER=ws://127.0.0.1:<port> to override)
 // Registers a fresh identity with the real UltraViewer service (validates the fake
 // IP/MAC/OS/computer-name values, ruling R10) and looks up a partner ID that does not exist.
-// The token is read from the git-ignored file and never printed.
-import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'vitest';
 import { DEV_WORKER_URL } from '../config';
 import { resolveIPv4 } from '../net/dns';
@@ -14,19 +12,11 @@ import { workerChannelOpener } from './worker-channel';
 const NONEXISTENT_PARTNER = '999999999';
 const DUMMY_PARTNER_SECRET = 'not-a-real-partner-secret';
 
-function devToken(): string {
-  const vars = readFileSync(new URL('../../worker/.dev.vars', import.meta.url), 'utf8');
-  const token = /^TOKEN_A=(.+)$/m.exec(vars)?.[1]?.trim();
-  if (!token) throw new Error('TOKEN_A missing in worker/.dev.vars');
-  return token;
-}
-
 describe.skipIf(!process.env.LIVE)('LIVE: register + lookup through the worker', () => {
   test('fresh identity is registered (ID assigned); a non-existent partner is rejected', async () => {
-    const token = devToken();
     const identity = createIdentity();
     const session = new RelaySession({
-      openChannel: workerChannelOpener({ workerUrl: process.env.WORKER ?? DEV_WORKER_URL, token }),
+      openChannel: workerChannelOpener({ workerUrl: process.env.WORKER ?? DEV_WORKER_URL }),
       resolve: resolveIPv4,
       now: () => performance.now(),
     });
@@ -46,7 +36,6 @@ describe.skipIf(!process.env.LIVE)('LIVE: register + lookup through the worker',
     });
     await closed;
     const emitted = JSON.stringify(events);
-    expect(emitted).not.toContain(token);
     expect(emitted).not.toContain(DUMMY_PARTNER_SECRET);
     expect(emitted).not.toContain(identity.password);
     const d = session.diagnostics;

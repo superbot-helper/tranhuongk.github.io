@@ -83,6 +83,12 @@ cho trình duyệt.
 - Deploy bằng `wrangler` lên `*.workers.dev` của tài khoản Cloudflare chủ repo.
 - Lý do không giới hạn theo hostname: relay được cấp dưới dạng IP thô, không có tên miền tương ứng.
 
+> **Cập nhật 2026-10-21 (chủ repo quyết định):** bỏ hẳn token Worker — không còn Worker secret,
+> không còn xác thực nào khác; ai biết URL Worker đều dùng được. Các chốt chặn còn lại: chỉ IPv4
+> công khai, chỉ cổng 443, và giới hạn 4 kết nối đồng thời **mỗi IP client** (`CF-Connecting-IP`)
+> thay cho mỗi token. Anti-goal 1 (open proxy) vì vậy được chấp nhận như một rủi ro còn lại: đích
+> bị khoá vào IPv4 công khai cổng 443 nhưng không còn giới hạn người gọi.
+
 ### 5.3 TLS trong trình duyệt
 
 Bắt buộc làm ở browser (không dùng `startTls` của Worker) vì:

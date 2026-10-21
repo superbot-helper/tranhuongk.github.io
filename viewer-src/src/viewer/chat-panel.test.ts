@@ -247,7 +247,6 @@ describe('chat in the viewer page', () => {
   const $ = <T extends HTMLElement>(sel: string) => app.querySelector<T>(sel)!;
 
   function connect(): void {
-    $<HTMLInputElement>('#token').value = 'x'.repeat(32);
     $<HTMLInputElement>('#partner').value = '123456789';
     $<HTMLInputElement>('#password').value = 'abc';
     $<HTMLFormElement>('#connect-form').dispatchEvent(new Event('submit', { cancelable: true }));
@@ -325,7 +324,6 @@ describe('chat in the viewer page', () => {
   });
 
   test('before tools are available the chat input is disabled with a reason', () => {
-    $<HTMLInputElement>('#token').value = 'x'.repeat(32);
     $<HTMLInputElement>('#partner').value = '123456789';
     $<HTMLInputElement>('#password').value = 'abc';
     $<HTMLFormElement>('#connect-form').dispatchEvent(new Event('submit', { cancelable: true }));

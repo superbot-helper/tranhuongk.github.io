@@ -22,7 +22,7 @@ import {
   type SessionEvent,
   type SessionPhase,
 } from '../session/relay-session';
-import { connectFormError, formatStats, loadToken, mountDiagnostics, readStorage, REASONS, saveToken } from '../spike/diagnostics';
+import { connectFormError, formatStats, mountDiagnostics, purgeLegacyToken, readStorage, REASONS } from '../spike/diagnostics';
 import { AUDIO_VOLUMES, AudioPlayer, AudioPlayerError, type AudioVolume } from './audio-player';
 import { openAnnotator, type AnnotatorHandle } from './annotate';
 import { captureFileName, downloadBlob, downloadUrl, pngDataUrl, snapshotCanvas } from './capture';
@@ -56,7 +56,7 @@ export interface ViewerSession extends FileTransferSession {
 }
 
 export interface ViewerDeps {
-  createSession(o: { workerUrl: string; token: string }): ViewerSession;
+  createSession(o: { workerUrl: string }): ViewerSession;
   workerUrl: string;
   /** Frame draw tick; defaults to requestAnimationFrame. */
   schedule?: (cb: () => void) => void;
@@ -111,8 +111,6 @@ const LAYOUT = `
   <header class="top">
     <h1>UV Web Viewer</h1>
     <form id="connect-form" autocomplete="off">
-      <label>Worker token
-        <input id="token" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" required></label>
       <label class="check"><input id="remember" type="checkbox"> Nhớ trên thiết bị này</label>
       <label>ID đối tác
         <input id="partner" inputmode="numeric" autocomplete="off" required></label>
@@ -150,7 +148,6 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
   app.innerHTML = LAYOUT;
   const $ = <T extends HTMLElement>(id: string) => app.querySelector<T>(`#${id}`)!;
   const form = $<HTMLFormElement>('connect-form');
-  const tokenInput = $<HTMLInputElement>('token');
   const remember = $<HTMLInputElement>('remember');
   const partner = $<HTMLInputElement>('partner');
   const password = $<HTMLInputElement>('password');
@@ -167,15 +164,13 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
   const textarea = $<HTMLTextAreaElement>('keyboard-input');
   const diag = mountDiagnostics($<HTMLDetailsElement>('diagnostics'), {
     workerUrl: deps.workerUrl,
-    token: () => tokenInput.value.trim(),
   });
   const { log } = diag;
 
-  // --- identity and token (unchanged phase-0 rules) ---------------------------------------
+  // --- identity (phase-0 rules); the Worker has no token any more -------------------------
+  purgeLegacyToken();
   let identity: ClientIdentity = loadIdentity() ?? createIdentity();
-  const stored = loadToken();
-  tokenInput.value = stored.token;
-  remember.checked = stored.remembered || readStorage(() => localStorage, IDENTITY_STORAGE_KEY) !== null;
+  remember.checked = readStorage(() => localStorage, IDENTITY_STORAGE_KEY) !== null;
   const blocked = deps.insecureNotice ?? null;
   if (blocked) {
     envNotice.textContent = blocked;
@@ -185,12 +180,10 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
   }
   log(`Trang sẵn sàng. Worker: ${deps.workerUrl || '(chưa cấu hình — nhập trong Diagnostics)'}`);
 
-  /** saveIdentity/saveToken throw on blocked storage: keep everything in memory for this tab. */
+  /** saveIdentity throws on blocked storage: keep everything in memory for this tab. */
   const persist = () => {
     try {
       saveIdentity(identity, remember.checked);
-      const token = tokenInput.value.trim();
-      if (token) saveToken(token, remember.checked);
     } catch (e) {
       log(`Cảnh báo: không lưu được vào storage (${(e as Error).name}); danh tính chỉ giữ trong tab này.`);
     }
@@ -895,7 +888,6 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     }
     const fields = {
       workerUrl: diag.workerUrl(),
-      token: tokenInput.value.trim(),
       partnerID: partner.value.replace(/\s+/g, ''),
       password: password.value,
     };
@@ -903,7 +895,7 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     if (problem) return log(problem);
     persist();
 
-    const current = deps.createSession({ workerUrl: fields.workerUrl, token: fields.token });
+    const current = deps.createSession({ workerUrl: fields.workerUrl });
     session = current;
     peer = null;
     controlOn = true;
@@ -993,9 +985,8 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
   forgetButton.addEventListener('click', () => {
     forgetDevice();
     identity = createIdentity();
-    tokenInput.value = '';
     remember.checked = false;
-    log('Đã xoá danh tính và token đã lưu trên thiết bị này; lần kết nối sau dùng danh tính mới.');
+    log('Đã xoá danh tính đã lưu trên thiết bị này; lần kết nối sau dùng danh tính mới.');
   });
 
   // No pointerup/pointercancel arrives when the page is backgrounded mid-touch: forget the fingers

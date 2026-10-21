@@ -1,15 +1,8 @@
 # UV Web Viewer — giai đoạn 0: runbook cho chủ repo (Task 8)
 
-Các bước chủ repo tự chạy. Token Worker và mật khẩu UltraViewer **không bao giờ** ghi vào repo, chat, log hay ảnh chụp.
+Các bước chủ repo tự chạy. Mật khẩu UltraViewer **không bao giờ** ghi vào repo, chat, log hay ảnh chụp.
 
-## 0. Tạo token (một lần)
-
-```sh
-openssl rand -hex 32
-```
-
-- Dùng `-hex`, **không** dùng `-base64`: token đi qua `Sec-WebSocket-Protocol`, nên `/`, `+`, `=` không hợp lệ.
-- Trang kiểm tra trước khi kết nối: token phải có ≥ 16 ký tự trong `A-Z a-z 0-9 _ -`.
+Worker không cần token (chủ repo chốt 2026-10-21) — ai biết URL Worker đều dùng được; chỉ đi tới IPv4 công khai cổng 443, tối đa 4 kết nối mỗi IP.
 
 ## A. Chạy local (Mac, Chrome desktop)
 
@@ -17,11 +10,8 @@ openssl rand -hex 32
 
 ```sh
 cd viewer-src/worker
-# Lần đầu: cp .dev.vars.example .dev.vars, rồi sửa dòng TOKEN_A=<token hex>
 npx wrangler dev --port 8787 --ip 127.0.0.1
 ```
-
-`.dev.vars` đã được git-ignore. Không commit file này.
 
 **Terminal 2 — trang:**
 
@@ -36,7 +26,6 @@ Mở URL được in ra (ví dụ `http://127.0.0.1:5173/viewer/`). Ở chế đ
 
 | Ô | Nhập gì |
 |---|---|
-| Worker token | giá trị `TOKEN_A` |
 | Nhớ trên thiết bị này | để trống (mặc định) |
 | ID đối tác | ID UltraViewer trên máy Windows |
 | Mật khẩu đối tác | mật khẩu UltraViewer trên máy Windows (tự gõ) |
@@ -76,9 +65,8 @@ iPhone/iPad không có `adb reverse`: dùng cách 2.
 
 ```sh
 cd viewer-src/worker
-npx wrangler login               # đăng nhập Cloudflare trên trình duyệt
-npx wrangler secret put TOKEN_A  # dán token hex khi được hỏi
-npx wrangler deploy              # in ra https://uv-web-viewer-pipe.<subdomain>.workers.dev
+npx wrangler login    # đăng nhập Cloudflare trên trình duyệt
+npx wrangler deploy   # in ra https://uv-web-viewer-pipe.<subdomain>.workers.dev
 ```
 
 Sau khi deploy:
@@ -97,7 +85,7 @@ Sau khi deploy:
 
 Ghi chú:
 
-- `wrangler.toml` đã đặt `[observability] enabled = false`. Không bật lại tính năng này, vì log sẽ chứa header `Sec-WebSocket-Protocol`, tức là chứa token.
+- `wrangler.toml` đã đặt `[observability] enabled = false`. Không bật lại tính năng này, vì log sẽ ghi header request và IP của người dùng.
 - Thử trên điện thoại: mở trang Pages qua 4G (tắt Wi-Fi nhà) và lặp lại các bước ở mục A. Khi khoá màn hình lúc đang kết nối, trang phải báo `Mất kết nối.` trong vòng ≤ 20 s.
 
 ## C. Phiên dài 30 phút
@@ -110,13 +98,13 @@ Ghi chú:
   npx wrangler tail --format pretty
   ```
 
-  **Không bao giờ** dùng `--format json`, vì JSON có header request, tức là có token.
+  **Không bao giờ** dùng `--format json`, vì JSON có header request và IP của người dùng.
 - Ghi lại các thông tin sau:
   - phiên có rớt không, và rớt ở phút nào;
   - mã đóng WS;
   - dòng stats cuối cùng;
   - CPU-time của Worker (dashboard Workers).
-- **Lỗi 4429** (quá nhiều kết nối, tối đa 4 cho mỗi token):
+- **Lỗi 4429** (quá nhiều kết nối, tối đa 4 cho mỗi IP):
   - Nếu Worker bị kill hoặc redeploy giữa chừng, lease có thể kẹt tới **15 phút**.
   - Chờ đủ 15 phút rồi mới thử lại. Đừng bấm kết nối liên tục.
 - Nếu màn hình đứng mà không báo lỗi, xem dòng stats:
@@ -147,9 +135,7 @@ Ghi chú:
 
 **Không bao giờ gửi:**
 
-- token;
 - mật khẩu UltraViewer;
-- nội dung `.dev.vars`;
-- ảnh chụp có ô token hoặc ô mật khẩu đang hiện chữ.
+- ảnh chụp có ô mật khẩu đang hiện chữ.
 
 ID đối tác là tuỳ chọn. Có thể che bớt ID trước khi gửi.

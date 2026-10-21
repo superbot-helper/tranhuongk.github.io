@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 
 /**
- * Worker pipe endpoint (not a secret; the access token is never stored in the repo).
+ * Worker pipe endpoint (not a secret; the Worker needs no token).
  * PLACEHOLDER: the repo owner fills this in with the `*.workers.dev` URL (as `wss://...`)
  * after running `wrangler deploy` for viewer-src/worker (see worker/wrangler.toml).
  */

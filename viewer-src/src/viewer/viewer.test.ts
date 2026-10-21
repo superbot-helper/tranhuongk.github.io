@@ -24,7 +24,6 @@ describe('desktop viewer page', () => {
   const $ = <T extends HTMLElement>(sel: string) => app.querySelector<T>(sel)!;
 
   function connect(p: Peer = peer()): void {
-    $<HTMLInputElement>('#token').value = 'x'.repeat(32);
     $<HTMLInputElement>('#partner').value = '123 456 789';
     $<HTMLInputElement>('#password').value = 'abc';
     $<HTMLFormElement>('#connect-form').dispatchEvent(new Event('submit', { cancelable: true }));
@@ -807,12 +806,37 @@ describe('desktop viewer page', () => {
       expect(notice.hidden).toBe(false);
       expect(notice.textContent).toBe('NOTICE-VN');
       expect($<HTMLButtonElement>('#connect').disabled).toBe(true);
-      $<HTMLInputElement>('#token').value = 'x'.repeat(32);
       $<HTMLInputElement>('#partner').value = '123456789';
       $<HTMLInputElement>('#password').value = 'abc';
       $<HTMLFormElement>('#connect-form').dispatchEvent(new Event('submit', { cancelable: true }));
       expect(sessions).toEqual([]);
       expect($('#status').textContent).toBe('NOTICE-VN');
+    });
+
+    test('there is no Worker token field; the session is created with the Worker URL only', () => {
+      expect(app.querySelector('#token')).toBeNull();
+      const created: unknown[] = [];
+      viewer.destroy();
+      viewer = mountViewer(app, {
+        createSession: (o) => { created.push(o); return session; },
+        workerUrl: 'ws://127.0.0.1:8787',
+        schedule: (cb) => cb(),
+      });
+      $<HTMLInputElement>('#partner').value = '123456789';
+      $<HTMLInputElement>('#password').value = 'abc';
+      $<HTMLFormElement>('#connect-form').dispatchEvent(new Event('submit', { cancelable: true }));
+      expect(created).toEqual([{ workerUrl: 'ws://127.0.0.1:8787' }]);
+    });
+
+    test('a Worker token left in either storage by an older version is deleted on load', () => {
+      viewer.destroy();
+      localStorage.setItem('uvweb.token', 'legacy-local');
+      sessionStorage.setItem('uvweb.token', 'legacy-session');
+      localStorage.setItem('uvweb.clipboard', '1');
+      viewer = mountViewer(app, { createSession: () => session, workerUrl: 'ws://127.0.0.1:8787', schedule: (cb) => cb() });
+      expect(localStorage.getItem('uvweb.token')).toBeNull();
+      expect(sessionStorage.getItem('uvweb.token')).toBeNull();
+      expect(localStorage.getItem('uvweb.clipboard')).toBe('1');
     });
 
     test('a secure context shows no environment notice', () => {

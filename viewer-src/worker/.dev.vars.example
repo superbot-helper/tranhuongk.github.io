@@ -1,5 +1,0 @@
-# Copy to .dev.vars (git-ignored). Use >= 32 random chars from [A-Za-z0-9_-]:
-# the token travels as a WebSocket subprotocol, so '/', '=', '+', ',' are not allowed.
-#   openssl rand -hex 32
-TOKEN_A=replace-with-32-plus-random-hex-chars-aaaaaaaa
-TOKEN_B=

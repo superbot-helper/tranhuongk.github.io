@@ -1,14 +1,12 @@
 // Phase-0 spike page turned into the viewer's "Diagnostics" module: connect-form checks,
-// token storage, failure texts, the stats line and the collapsible diagnostics section
-// (Worker URL, TLS probe, log). Never logs or stores the partner password; the Worker token
-// goes only into Sec-WebSocket-Protocol (and, when the owner allows it, into this device's storage).
-import { isValidToken } from '../net/pipe';
+// failure texts, the stats line and the collapsible diagnostics section
+// (Worker URL, TLS probe, log). Never logs or stores the partner password. The Worker
+// has no token (owner decision 2026-10-21).
 import type { SessionDiagnostics, SessionFailure, SessionPhase } from '../session/relay-session';
 import { probeCommandTls } from './probe';
 
-const TOKEN_KEY = 'uvweb.token';
-/** Fixed text: never echo the token (a browser error for a bad subprotocol quotes it). */
-export const BAD_TOKEN_FORMAT = 'Token sai định dạng (cần ≥ 16 ký tự A-Z, a-z, 0-9, _ hoặc -; tạo bằng openssl rand -hex 32).';
+/** Key of the Worker token that older versions stored; removed on load. */
+const LEGACY_TOKEN_KEY = 'uvweb.token';
 const MAX_LOG_LINES = 400;
 
 export const REASONS: Record<SessionFailure, string> = {
@@ -19,7 +17,7 @@ export const REASONS: Record<SessionFailure, string> = {
   deadline: 'Hết thời gian chờ (20 s).',
   transportClosed: 'Mất kết nối.',
   tls: 'Lỗi TLS / chứng chỉ relay.',
-  workerRefused: 'Worker từ chối kết nối (mã trong log; 4401 = token sai).',
+  workerRefused: 'Worker từ chối kết nối (mã trong log: 4403 = đích bị cấm, 4429 = quá nhiều kết nối, 4502 = Worker không mở được TCP).',
   protocol: 'Dữ liệu nhận được không hợp lệ (chi tiết trong log).',
   partnerEnded: 'Máy Windows đã kết thúc phiên.',
   partnerBlocked: 'Máy Windows đã chặn kết nối này.',
@@ -33,23 +31,19 @@ export function readStorage(get: () => Storage, key: string): string | null {
   }
 }
 
-export function loadToken(): { token: string; remembered: boolean } {
-  const session = readStorage(() => sessionStorage, TOKEN_KEY);
-  if (session) return { token: session, remembered: false };
-  const local = readStorage(() => localStorage, TOKEN_KEY);
-  return { token: local ?? '', remembered: local !== null };
-}
-
-/** Same placement rule as the identity: unchecked -> sessionStorage, checked -> localStorage. Throws on blocked storage. */
-export function saveToken(token: string, remember: boolean): void {
-  const [target, other] = remember ? [localStorage, sessionStorage] : [sessionStorage, localStorage];
-  target.setItem(TOKEN_KEY, token);
-  other.removeItem(TOKEN_KEY);
+/** Deletes a Worker token left in either storage by an older version (the Worker has no token now). */
+export function purgeLegacyToken(): void {
+  for (const get of [() => localStorage, () => sessionStorage]) {
+    try {
+      get().removeItem(LEGACY_TOKEN_KEY);
+    } catch {
+      // storage blocked: nothing was stored here either
+    }
+  }
 }
 
 export interface ConnectFields {
   workerUrl: string;
-  token: string;
   partnerID: string;
   password: string;
 }
@@ -57,8 +51,6 @@ export interface ConnectFields {
 /** The first problem with the connect form, as a log line; null when it can be submitted. */
 export function connectFormError(f: ConnectFields): string | null {
   if (!f.workerUrl) return 'Chưa có Worker URL (mở Diagnostics để nhập).';
-  if (!f.token) return 'Nhập Worker token trước.';
-  if (!isValidToken(f.token)) return BAD_TOKEN_FORMAT;
   if (!/^[0-9]{1,64}$/.test(f.partnerID)) return 'ID đối tác chỉ gồm chữ số.';
   if (!f.password) return 'Nhập mật khẩu đối tác.';
   return null;
@@ -83,7 +75,7 @@ export interface Diagnostics {
 }
 
 /** Fills `details` with the diagnostics section: stats line, Worker URL, TLS probe and the log. */
-export function mountDiagnostics(details: HTMLDetailsElement, o: { workerUrl: string; token: () => string }): Diagnostics {
+export function mountDiagnostics(details: HTMLDetailsElement, o: { workerUrl: string }): Diagnostics {
   details.innerHTML = `
     <summary>Diagnostics</summary>
     <p id="stats"></p>
@@ -105,12 +97,9 @@ export function mountDiagnostics(details: HTMLDetailsElement, o: { workerUrl: st
 
   probeButton.addEventListener('click', () => {
     const url = workerUrl.value.trim();
-    const token = o.token();
     if (!url) return log('Chưa có Worker URL.');
-    if (!token) return log('Nhập Worker token trước.');
-    if (!isValidToken(token)) return log(BAD_TOKEN_FORMAT);
     probeButton.disabled = true;
-    probeCommandTls({ workerUrl: url, token, log })
+    probeCommandTls({ workerUrl: url, log })
       .then((r) => log(`TLS OK (cert expired: ${r.expired}), HTTP header received`))
       .catch((e: unknown) => {
         const err = e as { name?: string; code?: string; message?: string };

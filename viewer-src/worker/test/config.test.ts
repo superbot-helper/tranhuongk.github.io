@@ -1,5 +1,5 @@
-// wrangler.toml guard: Workers Logs / tail JSON include request headers, and the token rides
-// in Sec-WebSocket-Protocol, so persistent observability must stay explicitly off.
+// wrangler.toml guard: Workers Logs include request headers and client IPs, so persistent
+// observability must stay explicitly off.
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';

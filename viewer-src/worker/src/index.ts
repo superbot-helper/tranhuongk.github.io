@@ -1,25 +1,24 @@
 import { connect } from 'cloudflare:sockets';
-import { parseTarget, SUBPROTOCOL, tokenFromProtocols, tokenValid, type TokenEnv } from './guard';
+import { parseTarget, SUBPROTOCOL } from './guard';
 import { ConnLimiter } from './limiter';
 
 export { ConnLimiter };
 
-interface Env extends TokenEnv {
+interface Env {
   LIMITER: DurableObjectNamespace<ConnLimiter>;
 }
 
-const MAX_PER_TOKEN = 4;
+const MAX_PER_IP = 4;
 const LEASE_RENEW_MS = 5 * 60 * 1000; // must stay well under the limiter's lease TTL
 
 // WebSocket close codes (application range).
-const CLOSE_BAD_TOKEN = 4401;
 const CLOSE_FORBIDDEN_TARGET = 4403;
 const CLOSE_TOO_MANY = 4429;
 const CLOSE_CONNECT_FAILED = 4502;
 const CLOSE_UNSUPPORTED_DATA = 1003;
 const CLOSE_NORMAL = 1000;
 
-/** Never log tokens or payload bytes. Close reasons are fixed strings. */
+/** Never log payload bytes or client IPs. Close reasons are fixed strings. */
 function safeClose(ws: WebSocket, code: number, reason: string): void {
   try {
     ws.close(code, reason);
@@ -28,8 +27,9 @@ function safeClose(ws: WebSocket, code: number, reason: string): void {
   }
 }
 
-async function tokenKey(token: string): Promise<string> {
-  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token)));
+/** Limiter name: SHA-256 of the client IP, so the raw IP is never stored. */
+async function ipKey(ip: string): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(ip)));
   return Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
@@ -39,7 +39,7 @@ function rejectAfterUpgrade(request: Request, code: number, reason: string): Res
   const [client, server] = [pair[0], pair[1]];
   server.accept();
   safeClose(server, code, reason);
-  // Echo the (token-free) subprotocol whenever it was offered: a browser aborts the
+  // Echo the subprotocol whenever it was offered: a browser aborts the
   // handshake with 1006 when none is selected, which would hide the close code.
   const offered = (request.headers.get('Sec-WebSocket-Protocol') ?? '')
     .split(',')
@@ -56,17 +56,14 @@ export default {
       return new Response('Expected WebSocket', { status: 426 });
     }
 
-    const token = tokenFromProtocols(request.headers.get('Sec-WebSocket-Protocol'));
-    if (token === null || !(await tokenValid(token, env))) {
-      return rejectAfterUpgrade(request, CLOSE_BAD_TOKEN, 'bad token');
-    }
     const target = parseTarget(url.searchParams.get('ip'), url.searchParams.get('port'));
     if (target === null) return rejectAfterUpgrade(request, CLOSE_FORBIDDEN_TARGET, 'forbidden target');
 
     const pair = new WebSocketPair();
     const [client, server] = [pair[0], pair[1]];
     server.accept();
-    ctx.waitUntil(pipe(server, target, token, env));
+    const clientIp = request.headers.get('CF-Connecting-IP') ?? 'unknown';
+    ctx.waitUntil(pipe(server, target, clientIp, env));
     return new Response(null, {
       status: 101,
       webSocket: client,
@@ -79,7 +76,7 @@ export default {
 async function pipe(
   ws: WebSocket,
   target: { ip: string; port: number },
-  token: string,
+  clientIp: string,
   env: Env,
 ): Promise<void> {
   let wsClosed = false;
@@ -122,10 +119,10 @@ async function pipe(
   });
 
   try {
-    // Concurrency limit: one Durable Object per token, max 4 live pipes.
-    const limiter = env.LIMITER.get(env.LIMITER.idFromName(await tokenKey(token)));
+    // Concurrency limit: one Durable Object per client IP, max 4 live pipes.
+    const limiter = env.LIMITER.get(env.LIMITER.idFromName(await ipKey(clientIp)));
     const connId = crypto.randomUUID();
-    if (!(await limiter.acquire(connId, MAX_PER_TOKEN))) {
+    if (!(await limiter.acquire(connId, MAX_PER_IP))) {
       ready(null);
       safeClose(ws, CLOSE_TOO_MANY, 'too many connections');
       return;

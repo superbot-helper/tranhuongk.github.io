@@ -22,7 +22,7 @@ import { COMMAND_ATTEMPT_MS, RelaySession, type RelaySessionDeps, type SessionEv
 
 // Synthetic values; the secrecy test asserts none of them reaches any emitted string.
 const SENTINEL_PASSWORD = 'SENTINEL-partner-secret-7f3a';
-const SENTINEL_TOKEN = 'sentineltoken' + 'c0ffee'.repeat(8);
+const SENTINEL_STRAY = 'sentinelstray' + 'c0ffee'.repeat(8);
 const SENTINEL_IDENTITY: ClientIdentity = {
   deviceIdentity: '0123456789ABCDEF0123456789ABCDEF',
   password: '86420135',
@@ -605,27 +605,18 @@ describe('RelaySession', () => {
     w.session.close();
   });
 
-  test('an invalid-format token → closed(workerRefused) with a fixed status that never quotes the token', async () => {
-    const w = new World({ ips: ['192.0.2.1'], openChannel: () => Promise.reject(new PipeError('invalidToken')) });
-    w.connect();
-    await waitFor(() => w.closedEvent());
-    expect(w.events.at(-1)).toEqual({ type: 'closed', reason: 'workerRefused' });
-    expect(w.statuses().at(-1)).toContain('token');
-  });
-
-  test('a stray SyntaxError quoting the token never reaches a status', async () => {
+  test('a stray SyntaxError quoting its input never reaches a status', async () => {
     const w = new World({
       ips: ['192.0.2.1'],
-      openChannel: () => Promise.reject(new SyntaxError(`The subprotocol '${SENTINEL_TOKEN}' is invalid.`)),
+      openChannel: () => Promise.reject(new SyntaxError(`The URL '${SENTINEL_STRAY}' is invalid.`)),
     });
     w.connect();
     await waitFor(() => w.closedEvent());
-    expect(JSON.stringify(w.events)).not.toContain(SENTINEL_TOKEN);
+    expect(JSON.stringify(w.events)).not.toContain(SENTINEL_STRAY);
   });
 
   test.each([
-    ['TlsError closed carrying 4401', () => new TlsError('closed', 'pipe closed before TLS completed: 4401 bad token'), '4401'],
-    ['PipeError 4401', () => new PipeError(4401, 'bad token'), '4401'],
+    ['TlsError closed carrying 4429', () => new TlsError('closed', 'pipe closed before TLS completed: 4429 too many connections'), '4429'],
     ['PipeError 4403', () => new PipeError(4403, ''), '4403'],
     ['PipeError 4429', () => new PipeError(4429, ''), '4429'],
     ['TlsError closed carrying 4502', () => new TlsError('closed', 'pipe closed before TLS completed: 4502'), '4502'],
@@ -680,13 +671,11 @@ describe('RelaySession', () => {
     expect(w.session.phase).toBe('closed');
   });
 
-  test('secrets never appear in any status or event: password, token, client password, MD5 proofs', async () => {
-    // The token lives only in the transport opener's closure (Sec-WebSocket-Protocol in production).
+  test('secrets never appear in any status or event: password, client password, MD5 proofs', async () => {
     const failing = new World({
       ips: ['192.0.2.1'],
-      openChannel: () => Promise.reject(new TlsError('closed', 'pipe closed before TLS completed: 4401 bad token')),
+      openChannel: () => Promise.reject(new TlsError('closed', 'pipe closed before TLS completed: 4403 forbidden target')),
     });
-    const tokenHolder = { token: SENTINEL_TOKEN };
     failing.connect();
     await waitFor(() => failing.closedEvent());
 
@@ -700,7 +689,7 @@ describe('RelaySession', () => {
     const login = w.peerTexts[0]!.split(':');
     const lookup = w.commandTexts[1]!.split(':');
     const secrets = [
-      SENTINEL_PASSWORD, tokenHolder.token, SENTINEL_IDENTITY.password,
+      SENTINEL_PASSWORD, SENTINEL_IDENTITY.password,
       lookup[2]!, lookup[7]!, login[2]!, login[13]!, login[15]!,
     ];
     const emitted = [...failing.events, ...w.events]

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
-import { isValidToken, openPipe, PipeError } from './pipe';
+import { openPipe, PipeError } from './pipe';
 
 class FakeWebSocket {
   static instances: FakeWebSocket[] = [];
@@ -40,8 +40,7 @@ class FakeWebSocket {
   }
 }
 
-const TOKEN = 'ab12cd34ef56ab78cd90ef12ab34cd56';
-const opts = { workerUrl: 'ws://127.0.0.1:8787', token: TOKEN, ip: '146.59.55.107', port: 443 as const };
+const opts = { workerUrl: 'ws://127.0.0.1:8787', ip: '146.59.55.107', port: 443 as const };
 const last = () => FakeWebSocket.instances[FakeWebSocket.instances.length - 1]!;
 
 beforeEach(() => {
@@ -50,12 +49,11 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
-test('connects to /tcp with the target in the query and the token only as a subprotocol', async () => {
+test('connects to /tcp with the target in the query and only the uvpipe subprotocol', async () => {
   const p = openPipe(opts);
   const ws = last();
   expect(ws.url).toBe('ws://127.0.0.1:8787/tcp?ip=146.59.55.107&port=443');
-  expect(ws.url).not.toContain(TOKEN);
-  expect(ws.protocols).toEqual(['uvpipe', TOKEN]);
+  expect(ws.protocols).toEqual(['uvpipe']);
   expect(ws.binaryType).toBe('arraybuffer');
   ws.open();
   await p;
@@ -89,10 +87,10 @@ test('a close after open is reported once with code and reason, even to late lis
   const pipe = await p;
   const reasons: string[] = [];
   pipe.onClose((r) => reasons.push(r));
-  ws.remoteClose(4401, 'bad token');
-  ws.remoteClose(4401, 'bad token');
+  ws.remoteClose(4429, 'too many connections');
+  ws.remoteClose(4429, 'too many connections');
   pipe.onClose((r) => reasons.push(`late:${r}`));
-  expect(reasons).toEqual(['4401 bad token', 'late:4401 bad token']);
+  expect(reasons).toEqual(['4429 too many connections', 'late:4429 too many connections']);
   pipe.send(new Uint8Array([1])); // ignored after close
   expect(ws.sent).toHaveLength(0);
 });
@@ -129,32 +127,10 @@ test('rejects text frames by closing the pipe', async () => {
   expect(reasons).toEqual(['unexpected text message']);
 });
 
-test('token format: >= 16 chars of [A-Za-z0-9_-] (openssl rand -hex 32 qualifies)', () => {
-  expect(isValidToken(TOKEN)).toBe(true);
-  expect(isValidToken('0123456789abcdef')).toBe(true);
-  expect(isValidToken('A-b_C'.repeat(4))).toBe(true);
-  for (const bad of ['', 'short', '0123456789abcde', 'a b'.repeat(8), 'abc/def+ghi=jklmnop', 'abcdefghijklmnop,', 'đđđđđđđđđđđđđđđđ']) {
-    expect(isValidToken(bad)).toBe(false);
-  }
-});
-
-test('an invalid token rejects (never throws) before any WebSocket, and the error never contains it', async () => {
-  const malformed = `MARKER${TOKEN.slice(0, 10)} /=+`; // spaces, '/', '=', '+' are not token chars
-  let result: Promise<unknown> | null = null;
-  expect(() => {
-    result = openPipe({ ...opts, token: malformed });
-  }).not.toThrow();
-  const err = await result!.catch((e: unknown) => e);
-  expect(FakeWebSocket.instances).toHaveLength(0);
-  expect(err).toBeInstanceOf(PipeError);
-  expect(err).toMatchObject({ code: 'invalidToken' });
-  expect(JSON.stringify(err) + String(err) + (err as Error).message).not.toContain('MARKER');
-});
-
 test('a WebSocket constructor that throws becomes a rejection with a fixed, secret-free message', async () => {
   class ThrowingWebSocket {
-    constructor(_url: string, protocols: string[]) {
-      throw new SyntaxError(`The subprotocol '${protocols[1]}' is invalid.`);
+    constructor(url: string) {
+      throw new SyntaxError(`The URL '${url}' is invalid.`);
     }
   }
   vi.stubGlobal('WebSocket', ThrowingWebSocket);
@@ -165,7 +141,7 @@ test('a WebSocket constructor that throws becomes a rejection with a fixed, secr
   const err = await result!.catch((e: unknown) => e);
   expect(err).toBeInstanceOf(PipeError);
   expect(err).toMatchObject({ code: 'cannotOpen' });
-  expect((err as Error).message).not.toContain(TOKEN);
+  expect((err as Error).message).not.toContain('127.0.0.1');
 });
 
 test('an abort before open closes the socket and rejects with code aborted', async () => {

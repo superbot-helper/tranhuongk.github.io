@@ -1,5 +1,5 @@
 // Phase-0 connectivity probe: DoH -> Worker pipe -> TLS (SNI "ultraviewer") -> HTTP preamble.
-// Shared by the spike page button and the LIVE test. Never logs the token.
+// Shared by the spike page button and the LIVE test. 
 import { resolveIPv4 } from '../net/dns';
 import { openPipe } from '../net/pipe';
 import { openTls } from '../net/tls';
@@ -16,7 +16,6 @@ export interface ProbeResult {
 
 export async function probeCommandTls(o: {
   workerUrl: string;
-  token: string;
   log: (line: string) => void;
   host?: string;
   /** Use this relay IP instead of the first A record (diagnostics: relays serve different certs). */
@@ -30,7 +29,7 @@ export async function probeCommandTls(o: {
   if (ip === undefined) throw new Error(`no A record for ${host}`);
   o.log(`A: ${ips.join(', ')} -> using ${ip}`);
 
-  const pipe = await openPipe({ workerUrl: o.workerUrl, token: o.token, ip, port: 443 });
+  const pipe = await openPipe({ workerUrl: o.workerUrl, ip, port: 443 });
   o.log('worker pipe open');
   const tls = await openTls(pipe, { sni: 'ultraviewer', certName: host });
   o.log(`TLS OK (cert expired: ${tls.expired})`);

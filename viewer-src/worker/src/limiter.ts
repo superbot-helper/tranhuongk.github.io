@@ -7,8 +7,8 @@ import { DurableObject } from 'cloudflare:workers';
 const LEASE_TTL_MS = 15 * 60 * 1000;
 
 /**
- * Counts concurrent pipes for ONE token (the Durable Object is named after the SHA-256
- * of the token, so the raw token is never stored). Leases are keyed by connection id.
+ * Counts concurrent pipes for ONE client IP (the Durable Object is named after the SHA-256
+ * of the IP, so the raw address is never stored). Leases are keyed by connection id.
  */
 export class ConnLimiter extends DurableObject {
   async acquire(connId: string, max: number): Promise<boolean> {

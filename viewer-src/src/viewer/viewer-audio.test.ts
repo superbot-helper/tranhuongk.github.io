@@ -56,7 +56,6 @@ describe('computer audio in the viewer page', () => {
   }
 
   function connect(): void {
-    $<HTMLInputElement>('#token').value = 'x'.repeat(32);
     $<HTMLInputElement>('#partner').value = '123456789';
     $<HTMLInputElement>('#password').value = 'abc';
     $<HTMLFormElement>('#connect-form').dispatchEvent(new Event('submit', { cancelable: true }));

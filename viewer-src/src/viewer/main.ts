@@ -9,9 +9,9 @@ import { workerChannelOpener } from '../session/worker-channel';
 import { insecureContextNotice } from './secure-context';
 import { mountViewer, type ViewerDeps } from './viewer';
 
-const realSession: ViewerDeps['createSession'] = ({ workerUrl, token }) =>
+const realSession: ViewerDeps['createSession'] = ({ workerUrl }) =>
   new RelaySession({
-    openChannel: workerChannelOpener({ workerUrl, token }),
+    openChannel: workerChannelOpener({ workerUrl }),
     resolve: resolveIPv4,
     now: () => performance.now(),
   });

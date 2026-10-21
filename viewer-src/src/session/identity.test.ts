@@ -102,7 +102,7 @@ describe('identity', () => {
 
   test('forgetDevice removes every uvweb.* key but leaves foreign keys alone', () => {
     localStorage.setItem('uvweb.identity', 'x');
-    localStorage.setItem('uvweb.token', 'y');
+    localStorage.setItem('uvweb.clipboard', 'y');
     sessionStorage.setItem('uvweb.other', 'z');
     localStorage.setItem('unrelated', 'keep');
     forgetDevice();

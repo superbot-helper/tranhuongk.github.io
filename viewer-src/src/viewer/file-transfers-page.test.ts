@@ -15,7 +15,6 @@ describe('file transfer in the viewer page', () => {
   const file = (name: string, content = 'abc') => new File([content], name);
 
   function connect(tools = true): void {
-    $<HTMLInputElement>('#token').value = 'x'.repeat(32);
     $<HTMLInputElement>('#partner').value = '123456789';
     $<HTMLInputElement>('#password').value = 'abc';
     $<HTMLFormElement>('#connect-form').dispatchEvent(new Event('submit', { cancelable: true }));

@@ -21,7 +21,7 @@
 // close event). It never judges across a timer-throttling gap: a late tick sends a fresh
 // ping and starts the 8 s window from then.
 //
-// Secrets: the partner password, its MD5 proofs, the client password and the Worker token
+// Secrets: the partner password, its MD5 proofs and the client password
 // never appear in a status string or an error detail; neither does chat or clipboard text.
 import { DnsError } from '../net/dns';
 import { PipeError } from '../net/pipe';
@@ -220,7 +220,6 @@ class AttemptTimeout extends Error {
 }
 
 const WORKER_CODES: Record<number, string> = {
-  4401: 'token sai',
   4403: 'đích bị Worker cấm',
   4429: 'quá nhiều kết nối',
   4502: 'Worker không mở được TCP',
@@ -230,7 +229,7 @@ const WORKER_CODES: Record<number, string> = {
 function workerCode(e: unknown): number | null {
   if (e instanceof PipeError) return e.closeCode in WORKER_CODES ? e.closeCode : null;
   if (e instanceof TlsError && e.code === 'closed') {
-    const m = /\b(4401|4403|4429|4502)\b/.exec(e.message);
+    const m = /\b(4403|4429|4502)\b/.exec(e.message);
     return m ? Number(m[1]) : null;
   }
   return null;
@@ -254,7 +253,6 @@ function classify(e: unknown): Failure {
     return new Failure('tls', `TLS lỗi (${e.code}): ${e.message}`);
   }
   if (e instanceof PipeError) {
-    if (e.code === 'invalidToken') return new Failure('workerRefused', 'token Worker sai định dạng (cần ≥ 16 ký tự A-Z, a-z, 0-9, _ hoặc -)');
     if (e.code === 'cannotOpen') return new Failure('transportClosed', 'không tạo được WebSocket tới Worker (kiểm tra Worker URL)');
     if (e.code === 'aborted') return new Failure('transportClosed', 'bỏ lần thử kết nối');
     return new Failure('transportClosed', `Worker pipe đóng (${e.closeCode})`);
@@ -265,8 +263,8 @@ function classify(e: unknown): Failure {
 }
 
 /**
- * Errors out of `openChannel` other than the transport's own typed ones may quote the token
- * (e.g. a browser `SyntaxError: The subprotocol '<token>' is invalid.`): keep only the name.
+ * Errors out of `openChannel` other than the transport's own typed ones may quote the Worker
+ * URL or other input: keep only the name.
  */
 function transportError(e: unknown): unknown {
   if (e instanceof Failure || e instanceof PipeError || e instanceof TlsError || e instanceof AttemptTimeout || e instanceof DnsError) {

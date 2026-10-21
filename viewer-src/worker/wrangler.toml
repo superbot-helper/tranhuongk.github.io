@@ -2,9 +2,8 @@ name = "uv-web-viewer-pipe"
 main = "src/index.ts"
 compatibility_date = "2026-10-01"
 
-# Tokens are Worker secrets (never in this file):
-#   npx wrangler secret put TOKEN_A      (optionally TOKEN_B)
-# Local dev reads them from .dev.vars (git-ignored); see .dev.vars.example.
+# No secrets: the Worker has no token (owner decision 2026-10-21). Guards are
+# public-IPv4:443 only and max 4 concurrent pipes per client IP.
 
 [[durable_objects.bindings]]
 name = "LIMITER"
@@ -15,7 +14,7 @@ class_name = "ConnLimiter"
 tag = "v1"
 new_sqlite_classes = ["ConnLimiter"]
 
-# Workers Logs / tail JSON would record request headers, including Sec-WebSocket-Protocol
-# (= the token). Keep persistent logs off; use `wrangler tail --format pretty` only.
+# Workers Logs would record request headers and client IPs. Keep persistent logs off;
+# use `wrangler tail --format pretty` only.
 [observability]
 enabled = false

@@ -172,10 +172,10 @@ describe('openTls over a BytePipe', () => {
     const [client] = pipePair(); // nobody answers the ClientHello
     const p = openTls(client, base);
     // Simulate the worker's post-upgrade rejection.
-    setTimeout(() => client.shut('4401 bad token'), 5);
+    setTimeout(() => client.shut('4429 too many connections'), 5);
     const err = await p.catch((e: unknown) => e);
     expect(err).toMatchObject({ code: 'closed' });
-    expect((err as Error).message).toContain('4401 bad token');
+    expect((err as Error).message).toContain('4429 too many connections');
   });
 
   test('silent peer => TlsError(handshake) after the timeout', async () => {
