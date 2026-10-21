@@ -27,6 +27,7 @@
         --screen: #0E1117;
         /* Derived: --danger as text on surfaces (4.5:1), notice fills, the select chevron. */
         --danger-text: #C4262B;
+        --danger-solid: #C4262B;
         --warn-fill: color-mix(in srgb, var(--warn) 16%, var(--surface));
         --danger-fill: color-mix(in srgb, var(--danger) 14%, var(--surface));
         --accent-fill: color-mix(in srgb, var(--accent) 12%, var(--surface));
@@ -160,8 +161,9 @@
       .tb-btn:hover { background: var(--field-hover); }
       .tb-btn[aria-pressed="true"], #chat-toggle[aria-expanded="true"], .menu.on > .tb-btn { background: var(--accent); color: var(--on-accent); }
       .tb-btn[aria-pressed="true"]:hover:not(:disabled), #chat-toggle[aria-expanded="true"]:hover, .menu.on > .tb-btn:hover { background: var(--accent-hover); }
-      .tb-btn.danger { background: var(--danger); color: var(--on-danger); font-weight: 600; }
-      .tb-btn.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 88%, #000); }
+      /* Filled danger uses the darker --danger-text red so white text reaches 4.5:1. */
+      .tb-btn.danger { background: var(--danger-solid); color: var(--on-danger); font-weight: 600; }
+      .tb-btn.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger-solid) 88%, #000); }
       .menu[open] > .tb-btn:not(:hover) { background: var(--field-hover); }
       .menu.on[open] > .tb-btn { background: var(--accent-hover); }
       .tb-btn .chev { width: 14px; height: 14px; margin: 0 -2px 0 -2px; }
