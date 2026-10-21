@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { CLIPBOARD_NOTICE_MS } from './clipboard-sync';
+import { PASTE_FALLBACK_MS } from './input';
 import { packet, peer, settle, TestSession } from './test-session';
 import { mountViewer, type ViewerHandle } from './viewer';
 
@@ -20,6 +21,13 @@ describe('clipboard sync in the viewer page', () => {
   let textarea: HTMLTextAreaElement;
   let writeText: ReturnType<typeof vi.fn>;
   const $ = <T extends HTMLElement>(sel: string) => app.querySelector<T>(sel)!;
+
+  /** Apple platform: ⌘V is the local paste shortcut, Ctrl+V an ordinary remote shortcut. */
+  function mountMac(): void {
+    viewer.destroy();
+    Object.defineProperty(navigator, 'platform', { configurable: true, get: () => 'MacIntel' });
+    mount();
+  }
 
   function mount(): void {
     document.body.innerHTML = '<main id="app"></main>';
@@ -67,6 +75,7 @@ describe('clipboard sync in the viewer page', () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     delete (navigator as unknown as Record<string, unknown>).clipboard;
+    delete (navigator as unknown as Record<string, unknown>).platform;
   });
 
   test('Clipboard is off by default; turning it on enables sharing on the session', () => {
@@ -100,29 +109,79 @@ describe('clipboard sync in the viewer page', () => {
     expect(app.querySelectorAll('#chat-panel .clip-entry')).toHaveLength(0);
   });
 
-  test('⌘V: the V keydown is not sent (no Win+V); Win is lifted under Ctrl before V', async () => {
+  test('Mac ⌘V + paste: the V keydown is not sent (no Win+V); upload, then Ctrl+V once with Win lifted under Ctrl', async () => {
+    mountMac();
     connect();
+    clipboardButton().click();
+    vi.useFakeTimers();
     keyEvent('keydown', { code: 'MetaLeft', key: 'Meta', metaKey: true });
     const v = keyEvent('keydown', { code: 'KeyV', key: 'v', metaKey: true });
     // The browser default must run: it is what fires `paste`.
     expect(v.defaultPrevented).toBe(false);
-    await settle();
+    await vi.advanceTimersByTimeAsync(0);
     expect(session.sent).toEqual([WIN_DOWN]);
     paste('abc');
-    await settle();
-    expect(session.sent).toEqual([WIN_DOWN, CTRL_DOWN, WIN_UP, V_DOWN, V_UP, CTRL_UP]);
-    // V and ⌘ released afterwards: nothing more goes out.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(session.sent).toEqual([WIN_DOWN, 'clipboard abc', CTRL_DOWN, WIN_UP, V_DOWN, V_UP, CTRL_UP]);
+    // The fallback was cancelled; V and ⌘ released afterwards: nothing more goes out.
+    await vi.advanceTimersByTimeAsync(PASTE_FALLBACK_MS * 3);
     keyEvent('keyup', { code: 'KeyV', key: 'v', metaKey: true });
     keyEvent('keyup', { code: 'MetaLeft', key: 'Meta' });
-    await settle();
-    expect(session.sent).toHaveLength(6);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(session.sent).toHaveLength(7);
     // A plain V afterwards is typed normally.
     keyEvent('keydown', { code: 'KeyV', key: 'v' });
-    await settle();
+    await vi.advanceTimersByTimeAsync(0);
     expect(session.sent.at(-1)).toEqual(packet(1, 0x56, 0x2f, 0x76));
   });
 
-  test('Ctrl+V: Ctrl held by the user stays held; only V goes down and up', async () => {
+  test('Mac ⌘V without a paste event: Ctrl+V after 150 ms, never a lone Win', async () => {
+    mountMac();
+    connect();
+    clipboardButton().click();
+    vi.useFakeTimers();
+    keyEvent('keydown', { code: 'MetaLeft', key: 'Meta', metaKey: true });
+    keyEvent('keydown', { code: 'KeyV', key: 'v', metaKey: true });
+    await vi.advanceTimersByTimeAsync(PASTE_FALLBACK_MS - 1);
+    expect(session.sent).toEqual([WIN_DOWN]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(session.sent).toEqual([WIN_DOWN, CTRL_DOWN, WIN_UP, V_DOWN, V_UP, CTRL_UP]);
+    keyEvent('keyup', { code: 'KeyV', key: 'v', metaKey: true });
+    keyEvent('keyup', { code: 'MetaLeft', key: 'Meta' });
+    await vi.advanceTimersByTimeAsync(PASTE_FALLBACK_MS * 3);
+    expect(session.sent).toEqual([WIN_DOWN, CTRL_DOWN, WIN_UP, V_DOWN, V_UP, CTRL_UP]);
+  });
+
+  test('Mac ⌘ released before the fallback fires: Ctrl+V goes first, Win is not lifted alone', async () => {
+    mountMac();
+    connect();
+    vi.useFakeTimers();
+    keyEvent('keydown', { code: 'MetaLeft', key: 'Meta', metaKey: true });
+    keyEvent('keydown', { code: 'KeyV', key: 'v', metaKey: true });
+    await vi.advanceTimersByTimeAsync(20);
+    keyEvent('keyup', { code: 'MetaLeft', key: 'Meta' });
+    await vi.advanceTimersByTimeAsync(PASTE_FALLBACK_MS * 3);
+    expect(session.sent).toEqual([WIN_DOWN, CTRL_DOWN, WIN_UP, V_DOWN, V_UP, CTRL_UP]);
+    // A paste event arriving late (after the fallback typed Ctrl+V) does not paste twice.
+    paste('');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(session.sent).toHaveLength(6);
+  });
+
+  test('Mac Ctrl+V is an ordinary remote shortcut on the VK path', async () => {
+    mountMac();
+    connect();
+    vi.useFakeTimers();
+    keyEvent('keydown', { code: 'ControlLeft', key: 'Control', ctrlKey: true });
+    const v = keyEvent('keydown', { code: 'KeyV', key: 'v', ctrlKey: true });
+    keyEvent('keyup', { code: 'KeyV', key: 'v', ctrlKey: true });
+    keyEvent('keyup', { code: 'ControlLeft', key: 'Control' });
+    await vi.advanceTimersByTimeAsync(PASTE_FALLBACK_MS * 3);
+    expect(v.defaultPrevented).toBe(true);
+    expect(session.sent).toEqual([CTRL_DOWN, V_DOWN, V_UP, CTRL_UP]);
+  });
+
+  test('non-Mac Ctrl+V is intercepted: Ctrl held by the user stays held; only V goes down and up', async () => {
     connect();
     keyEvent('keydown', { code: 'ControlLeft', key: 'Control', ctrlKey: true });
     const v = keyEvent('keydown', { code: 'KeyV', key: 'v', ctrlKey: true });
@@ -134,8 +193,19 @@ describe('clipboard sync in the viewer page', () => {
     expect(session.sent).toEqual([CTRL_DOWN, V_DOWN, V_UP]);
     keyEvent('keyup', { code: 'KeyV', key: 'v', ctrlKey: true });
     keyEvent('keyup', { code: 'ControlLeft', key: 'Control' });
-    await settle();
+    await new Promise((r) => setTimeout(r, PASTE_FALLBACK_MS + 50));
+    // The fallback was cancelled by the paste event: no second Ctrl+V.
     expect(session.sent).toEqual([CTRL_DOWN, V_DOWN, V_UP, CTRL_UP]);
+  });
+
+  test('a failed upload sends only the upload attempt, no Ctrl+V', async () => {
+    connect();
+    clipboardButton().click();
+    session.failClipboard = new Error('sendFailed');
+    paste('không gửi được');
+    await settle();
+    expect(session.sent).toEqual(['clipboard không gửi được']);
+    expect($('#clipboard-toast').textContent).toContain('Không gửi được clipboard');
   });
 
   test('paste while not controlling sends nothing and inserts nothing', async () => {
@@ -158,7 +228,7 @@ describe('clipboard sync in the viewer page', () => {
     expect($('#clipboard-toast .toast-copy').hidden).toBe(true);
   });
 
-  test('writeText rejected: a toast offers Sao chép, which copies inside the click; it hides after 3 s', async () => {
+  test('writeText rejected: a toast offers Sao chép, which copies inside the click; it stays until used or dismissed', async () => {
     connect();
     clipboardButton().click();
     writeText.mockRejectedValueOnce(new DOMException('no gesture', 'NotAllowedError'));
@@ -181,6 +251,16 @@ describe('clipboard sync in the viewer page', () => {
     session.emit({ type: 'clipboard', text: 'mã 5678' });
     await vi.advanceTimersByTimeAsync(0);
     expect(toast.hidden).toBe(false);
+    await vi.advanceTimersByTimeAsync(CLIPBOARD_NOTICE_MS * 10);
+    expect(toast.hidden).toBe(false);
+    expect(copy.hidden).toBe(false);
+    $<HTMLButtonElement>('#clipboard-toast .toast-close').click();
+    expect(toast.hidden).toBe(true);
+    // Plain notices still fade after 3 s.
+    session.emit({ type: 'clipboard', text: 'mã 9999' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(toast.hidden).toBe(false);
+    expect(copy.hidden).toBe(true);
     await vi.advanceTimersByTimeAsync(CLIPBOARD_NOTICE_MS);
     expect(toast.hidden).toBe(true);
   });

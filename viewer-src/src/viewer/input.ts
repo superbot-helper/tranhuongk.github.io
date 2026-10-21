@@ -6,9 +6,13 @@
 // Touch pointers (pointerType 'touch') are left to viewer/touch.ts (trackpad mode), which comes
 // back through the trackpad* methods; a real mouse or pen keeps the desktop path here. Switching
 // between the two releases everything held first.
-// Paste (Task 5, Review Focus 1): the ⌘V / Ctrl+V keydown is kept off the VK path (Win+V would
-// open the Windows clipboard history) and left to the browser, whose `paste` event on the textarea
-// hands the text to `onPaste` (clipboard sync); a Ctrl+V combination is then typed on Windows.
+// Paste (Task 5, Review Focus 1): the platform's own paste shortcut (⌘V on Apple platforms, Ctrl+V
+// elsewhere) is kept off the VK path (⌘ is Win there: Win+V would open the Windows clipboard history)
+// and left to the browser, whose `paste` event on the textarea hands the text to `onPaste` (clipboard
+// sync); a Ctrl+V combination is then typed on Windows. The other combination (Ctrl+V on a Mac) is an
+// ordinary remote shortcut. When no `paste` follows (empty pasteboard, a browser that fires none)
+// Ctrl+V is typed anyway after PASTE_FALLBACK_MS, or at once when ⌘ goes up first (a lone Win
+// press-release would open the Start menu).
 import { InputEncoder, type InputMessage, type KeyInput, type PointerButton, type WheelMode } from '../input/encoder';
 import { toRemote, type View } from '../input/geometry';
 import { codeToKey } from '../input/keymap';
@@ -60,9 +64,21 @@ const FLUSH_WAIT_TICKS = 50;
 
 const ascii = new TextEncoder();
 
-/** ⌘V / Ctrl+V (Shift allowed: paste as plain text), not AltGr+V. */
-function isPasteShortcut(e: KeyboardEvent): boolean {
-  return e.code === 'KeyV' && (e.metaKey || e.ctrlKey) && !e.altKey;
+/** Wait for the browser's `paste` after an intercepted paste keydown before typing Ctrl+V anyway. */
+export const PASTE_FALLBACK_MS = 150;
+/** A `paste` this soon after the fallback typed Ctrl+V uploads only (no second Ctrl+V). */
+const PASTE_LATE_MS = 1_000;
+
+function defaultApplePlatform(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const data = (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData;
+  return /Mac|iPhone|iPad|iPod|macOS|iOS/i.test(data?.platform || navigator.platform || '');
+}
+
+/** The browser's paste shortcut: ⌘V on Apple platforms, Ctrl+V elsewhere (Shift allowed), not AltGr+V. */
+function isPasteShortcut(e: KeyboardEvent, apple: boolean): boolean {
+  if (e.code !== 'KeyV' || e.altKey) return false;
+  return apple ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
 }
 
 function isButton(b: number): b is PointerButton {
@@ -84,6 +100,8 @@ export interface DesktopInputOptions {
    * Resolve true to type Ctrl+V on Windows afterwards (default when absent).
    */
   onPaste?: (text: string) => boolean | Promise<boolean>;
+  /** ⌘V (true) or Ctrl+V (false) is the local paste shortcut; detected from the platform by default. */
+  applePlatform?: boolean;
   capacity?: number;
 }
 
@@ -103,9 +121,15 @@ export class DesktopInput {
   /** Keys whose keydown was sent as text: their keyup (still flagged Alt) must not press Alt again. */
   private readonly textKeys = new Set<string>();
   private readonly detachers: Array<() => void> = [];
+  private readonly apple: boolean;
+  /** Types Ctrl+V if the browser's `paste` does not follow an intercepted paste keydown. */
+  private pasteFallback: ReturnType<typeof setTimeout> | null = null;
+  /** performance.now() when the fallback last typed Ctrl+V. */
+  private fallbackAt = Number.NEGATIVE_INFINITY;
 
   constructor(private readonly o: DesktopInputOptions) {
     const { canvas, textarea } = o;
+    this.apple = o.applePlatform ?? defaultApplePlatform();
     this.listen(canvas, 'pointerdown', (e) => this.onPointerDown(e as PointerEvent));
     this.listen(canvas, 'pointermove', (e) => this.onPointerMove(e as PointerEvent));
     this.listen(canvas, 'pointerup', (e) => this.onPointerUp(e as PointerEvent));
@@ -172,6 +196,7 @@ export class DesktopInput {
 
   /** Enqueue a release of every held key and button behind what is pending. */
   releaseAll(): void {
+    this.cancelPasteFallback();
     this.textKeys.clear();
     if (this.encoder && this.queue) this.pushRaw(this.encoder.releaseAll());
   }
@@ -347,10 +372,21 @@ export class DesktopInput {
   private onKey(e: KeyboardEvent, down: boolean): void {
     this.capsLock = e.getModifierState?.('CapsLock') ?? this.capsLock;
     if (!this.keyboardActive()) return;
-    if (down && isPasteShortcut(e)) {
+    if (down && isPasteShortcut(e, this.apple)) {
       // Not prevented: the browser's paste runs and `paste` follows (onPaste). Its keyup is dropped.
       this.textKeys.add(e.code);
+      this.cancelPasteFallback();
+      const encoder = this.encoder;
+      this.pasteFallback = setTimeout(() => {
+        this.pasteFallback = null;
+        if (this.encoder === encoder) this.fallbackPaste();
+      }, PASTE_FALLBACK_MS);
       return;
+    }
+    // ⌘ (Win) going up while the fallback waits: Ctrl+V first, so Win is not pressed alone.
+    if (!down && this.pasteFallback !== null && (e.code === 'MetaLeft' || e.code === 'MetaRight')) {
+      this.cancelPasteFallback();
+      this.fallbackPaste();
     }
     if (codeToKey(e.code) !== null) e.preventDefault();
     // A new keydown ends an earlier text press of the same key; macOS drops keyups of keys released
@@ -374,12 +410,25 @@ export class DesktopInput {
   private async onPaste(e: ClipboardEvent): Promise<void> {
     // The textarea only captures keys: pasted text never lands in it.
     e.preventDefault();
+    const late = this.pasteFallback === null && performance.now() - this.fallbackAt < PASTE_LATE_MS;
+    this.cancelPasteFallback();
+    this.fallbackAt = Number.NEGATIVE_INFINITY;
     if (!this.active()) return;
     const text = e.clipboardData?.getData('text/plain') ?? '';
     const encoder = this.encoder;
     const proceed = this.o.onPaste ? await this.o.onPaste(text) : true;
     // The upload may have taken a while: only type into the same, still controlled, session.
-    if (proceed && this.encoder === encoder && this.active()) this.sendPasteShortcut();
+    if (proceed && !late && this.encoder === encoder && this.active()) this.sendPasteShortcut();
+  }
+
+  private fallbackPaste(): void {
+    this.fallbackAt = performance.now();
+    this.sendPasteShortcut();
+  }
+
+  private cancelPasteFallback(): void {
+    if (this.pasteFallback !== null) clearTimeout(this.pasteFallback);
+    this.pasteFallback = null;
   }
 
   private onText(s: string, source?: KeyboardEvent): void {

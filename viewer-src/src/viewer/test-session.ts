@@ -42,6 +42,8 @@ export class TestSession implements ViewerSession {
   clipboardAllowed = false;
   /** Set to make the next sendChat reject. */
   failChat: Error | null = null;
+  /** Set to make the next sendClipboard reject (after recording the attempt). */
+  failClipboard: Error | null = null;
   private on: ((e: SessionEvent) => void) | null = null;
 
   connect(o: ConnectOptions, on: (e: SessionEvent) => void): void {
@@ -95,6 +97,11 @@ export class TestSession implements ViewerSession {
     if (!this.clipboardAllowed) throw new RelaySessionError('clipboardDisabled');
     clipboardPayload(text);
     this.sent.push(`clipboard ${text}`);
+    if (this.failClipboard) {
+      const e = this.failClipboard;
+      this.failClipboard = null;
+      throw e;
+    }
   }
 
   close(): void {

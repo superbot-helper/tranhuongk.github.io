@@ -4,8 +4,8 @@
 // only when the user pastes into the viewer (`paste` on the hidden textarea); the caller then
 // types Ctrl+V on Windows. Text copied on Windows is written with navigator.clipboard.writeText;
 // when the browser refuses (Safari outside a user gesture, no Clipboard API) a toast offers a
-// "Sao chép" button that writes inside its click. The last text sent or received is remembered
-// so neither side bounces it back. Nothing here is persisted or logged with its content.
+// "Sao chép" button that writes inside its click; that toast stays until used or dismissed (×).
+// The last text sent or received is remembered so neither side bounces it back. Nothing here is persisted or logged with its content.
 
 /** Text that crossed the shared clipboard during this session. */
 export interface ClipboardEntry {
@@ -179,7 +179,9 @@ export class ClipboardSync {
     this.copyButton.hidden = !withCopy;
     this.toast.hidden = false;
     if (this.timer !== null) clearTimeout(this.timer);
-    this.timer = setTimeout(() => this.hide(), CLIPBOARD_NOTICE_MS);
+    this.timer = null;
+    // The "Sao chép" offer stays until it is used or dismissed (×); plain notices fade (ruling P2-R8).
+    if (!withCopy) this.timer = setTimeout(() => this.hide(), CLIPBOARD_NOTICE_MS);
   }
 
   private hide(): void {
