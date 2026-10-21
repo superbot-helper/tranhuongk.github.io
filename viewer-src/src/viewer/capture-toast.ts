@@ -3,6 +3,8 @@
 // it is used or closed with × — the button's click is the user gesture the download needs.
 // An action may show a follow-up offer from its own `run` (one download per click); the toast then stays.
 
+import { icon } from './icons';
+
 export const CAPTURE_NOTICE_MS = 6_000;
 
 export interface CaptureToastAction {
@@ -29,7 +31,7 @@ export function createCaptureToast(el: HTMLElement): CaptureToast {
   el.hidden = true;
   el.innerHTML = `<span class="toast-text"></span>
     <button type="button" class="toast-action" hidden></button>
-    <button type="button" class="toast-close" aria-label="Đóng">×</button>`;
+    <button type="button" class="toast-close" aria-label="Đóng" title="Đóng">${icon('close')}</button>`;
   const text = el.querySelector<HTMLSpanElement>('.toast-text')!;
   const action = el.querySelector<HTMLButtonElement>('.toast-action')!;
   const close = el.querySelector<HTMLButtonElement>('.toast-close')!;

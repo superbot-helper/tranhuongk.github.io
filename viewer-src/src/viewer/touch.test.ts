@@ -361,7 +361,9 @@ describe('touch trackpad mode', () => {
   test('floating ⌨ and Phím buttons call their handlers and are not gestures', () => {
     const keyboard = el.querySelector<HTMLButtonElement>('[data-touch="keyboard"]')!;
     const keys = el.querySelector<HTMLButtonElement>('[data-touch="keys"]')!;
-    expect(keyboard.textContent).toBe('⌨');
+    // The ⌨ glyph is now the keyboard SVG icon; the name stays in aria-label.
+    expect(keyboard.querySelector('svg.icon[aria-hidden="true"]')).not.toBeNull();
+    expect(keyboard.getAttribute('aria-label')).toBe('Bật/tắt bàn phím ảo');
     expect(keys.textContent).toBe('Phím');
     const down = touch('pointerdown', 1, 900, 500, {}, keyboard);
     expect(down.defaultPrevented).toBe(true); // keeps focus where it is

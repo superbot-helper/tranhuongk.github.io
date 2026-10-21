@@ -7,6 +7,8 @@
 // "Sao chép" button that writes inside its click; that toast stays until used or dismissed (×).
 // The last text sent or received is remembered so neither side bounces it back. Nothing here is persisted or logged with its content.
 
+import { icon } from './icons';
+
 /** Text that crossed the shared clipboard during this session. */
 export interface ClipboardEntry {
   text: string;
@@ -74,7 +76,7 @@ export class ClipboardSync {
     toast.hidden = true;
     toast.innerHTML = `<span class="toast-text"></span>
       <button type="button" class="toast-copy" hidden>Sao chép</button>
-      <button type="button" class="toast-close" aria-label="Đóng">×</button>`;
+      <button type="button" class="toast-close" aria-label="Đóng" title="Đóng">${icon('close')}</button>`;
     this.textEl = toast.querySelector<HTMLSpanElement>('.toast-text')!;
     this.copyButton = toast.querySelector<HTMLButtonElement>('.toast-copy')!;
     // The toast's buttons never take the keyboard from the remote screen.
@@ -91,7 +93,7 @@ export class ClipboardSync {
         },
         (e: unknown) => {
           this.deps.log(`Chép clipboard bị trình duyệt từ chối (${errorName(e)})`);
-          if (this.pending === text) this.notice('Trình duyệt không cho chép: mở Chat → Clipboard để chép lại.');
+          if (this.pending === text) this.notice('Trình duyệt không cho chép: mở Chat, thẻ Clipboard để chép lại.');
         },
       );
     });

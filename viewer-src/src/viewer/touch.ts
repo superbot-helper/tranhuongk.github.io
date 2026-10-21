@@ -21,6 +21,7 @@
 //   factor 1 the pointer follows the finger's on-screen distance.
 import type { PointerButton } from '../input/encoder';
 import type { View } from '../input/geometry';
+import { icon } from './icons';
 
 export interface Point {
   x: number;
@@ -159,7 +160,7 @@ export function attachTouch(
   const bar = document.createElement('div');
   bar.className = 'touch-buttons';
   bar.innerHTML =
-    '<button type="button" data-touch="keyboard" aria-label="Bật/tắt bàn phím ảo" title="Bàn phím ảo">⌨</button>' +
+    `<button type="button" data-touch="keyboard" aria-label="Bật/tắt bàn phím ảo" title="Bàn phím ảo">${icon('keyboard')}</button>` +
     '<button type="button" data-touch="keys" aria-label="Phím đặc biệt" title="Phím đặc biệt">Phím</button>' +
     '<button type="button" data-touch="paste" aria-label="Dán sang Windows" title="Dán clipboard của thiết bị sang Windows">Dán</button>';
   el.append(bar);

@@ -109,18 +109,19 @@ const OVERFLOW_NOTICE = 'Hàng đợi chuột/bàn phím bị đầy: đã thả
 
 const LAYOUT = `
   <header class="top">
-    <h1>UV Web Viewer</h1>
+    <h1>Điều khiển máy tính</h1>
+    <p class="lede">Nhập ID và mật khẩu đang hiện trong UltraViewer trên máy Windows.</p>
     <form id="connect-form" autocomplete="off">
-      <label class="check"><input id="remember" type="checkbox"> Nhớ trên thiết bị này</label>
       <label>ID đối tác
         <input id="partner" inputmode="numeric" autocomplete="off" required></label>
       <label>Mật khẩu đối tác
         <input id="password" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" required></label>
+      <label class="check"><input id="remember" type="checkbox"> Nhớ trên thiết bị này</label>
       <div class="row">
-        <button id="connect" type="submit">Kết nối</button>
-        <button id="disconnect" type="button" disabled>Huỷ</button>
+        <button id="connect" type="submit" class="primary">Kết nối</button>
+        <button id="disconnect" type="button" class="text" disabled>Huỷ</button>
       </div>
-      <button id="forget" type="button" class="secondary">Quên thiết bị này</button>
+      <button id="forget" type="button" class="text secondary">Quên thiết bị này</button>
     </form>
     <p id="status" role="status">Chưa kết nối</p>
     <p id="env-notice" role="alert" hidden></p>
@@ -581,6 +582,14 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     if (audioNotice) notices.push(audioNotice);
     noticeEl.textContent = notices.join(' · ');
     noticeEl.hidden = notices.length === 0;
+    toolbar.setConnection(
+      peer && {
+        name: peer.displayName || 'Máy Windows',
+        resolution: `${peer.width}×${peer.height}`,
+        detail: statusEl.textContent ?? '',
+        tone: overflowNotice ? 'error' : notices.length > 0 ? 'warn' : 'ok',
+      },
+    );
     // The browser cursor is hidden (cursor:none) only while controlling AND a remote shape is known.
     controlActive = active;
     updateControlling();
@@ -1022,6 +1031,7 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
       input.detach();
       resizeObserver?.disconnect();
       cursorLayer.dispose();
+      toolbar.dispose();
       chatPanel.dispose();
       clipboardSync.dispose();
       detachScreenDrop();

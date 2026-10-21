@@ -446,6 +446,27 @@ describe('desktop viewer page', () => {
     expect(session.sent.length).toBe(n);
   });
 
+  test('the bar status block shows the machine name and resolution while connected', () => {
+    connect(peer({ displayName: 'DEMO-PC', width: 2560, height: 720 }));
+    const status = $('#toolbar #conn-status');
+    expect(status.querySelector('.tb-name')!.textContent).toBe('DEMO-PC');
+    expect(status.querySelector('.tb-res')!.textContent).toBe('2560×720');
+    expect(status.querySelector<HTMLElement>('.tb-dot')!.dataset.tone).toBe('ok');
+    expect(status.title).toBe($('#status').textContent);
+    expect(status.title).toContain('Đã kết nối tới DEMO-PC');
+    // View-only (a notice is shown): amber.
+    session.emit({ type: 'inputPermission', allowed: false });
+    expect(status.querySelector<HTMLElement>('.tb-dot')!.dataset.tone).toBe('warn');
+    session.emit({ type: 'closed', reason: 'partnerEnded' });
+    expect(status.querySelector('.tb-name')!.textContent).toBe('');
+  });
+
+  test('a peer without a display name is shown as Máy Windows', () => {
+    connect(peer({ displayName: '' }));
+    expect($('#conn-status .tb-name').textContent).toBe('Máy Windows');
+    expect($('#conn-status .tb-res').textContent).toBe('1920×1080');
+  });
+
   test('the connect form collapses once connected and returns after the session closes', () => {
     connect();
     expect($('#connect-form').hidden).toBe(true);

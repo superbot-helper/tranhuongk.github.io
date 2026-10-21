@@ -6,6 +6,7 @@ import { WORKER_URL } from '../config';
 import { resolveIPv4 } from '../net/dns';
 import { RelaySession } from '../session/relay-session';
 import { workerChannelOpener } from '../session/worker-channel';
+import './fonts.css';
 import { insecureContextNotice } from './secure-context';
 import { mountViewer, type ViewerDeps } from './viewer';
 

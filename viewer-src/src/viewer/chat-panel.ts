@@ -8,6 +8,7 @@
 import { ChatError } from '../proto/chat';
 import type { ClipboardEntry } from './clipboard-sync';
 import { attachDropZone } from './file-transfers';
+import { icon } from './icons';
 
 /** UI limit of a chat message (Swift 16,384 UTF-16 units). */
 export const MAX_CHAT_UNITS = 16_384;
@@ -96,7 +97,7 @@ export function createChatPanel(root: HTMLElement, h: ChatPanelHandlers): ChatPa
         <button type="button" role="tab" class="chat-tab" data-tab="chat" aria-selected="true">Chat</button>
         <button type="button" role="tab" class="chat-tab" data-tab="clipboard" aria-selected="false">Clipboard</button>
       </div>
-      <button type="button" class="chat-close" aria-label="Đóng chat">×</button>
+      <button type="button" class="chat-close" aria-label="Đóng chat" title="Đóng chat">${icon('close')}</button>
     </div>
     <div class="chat-pane chat-pane-chat" role="tabpanel">
       <ol class="chat-transcript" aria-live="polite"></ol>
@@ -104,7 +105,7 @@ export function createChatPanel(root: HTMLElement, h: ChatPanelHandlers): ChatPa
       <p class="chat-unavailable" hidden></p>
       <p class="chat-error" role="alert" hidden></p>
       <div class="chat-compose">
-        <button type="button" class="chat-attach" aria-label="Gửi file sang máy Windows" title="Gửi file (hoặc kéo file thả vào đây)">📎</button>
+        <button type="button" class="chat-attach" aria-label="Gửi file sang máy Windows" title="Gửi file (hoặc kéo file thả vào đây)">${icon('paperclip')}</button>
         <input type="file" class="chat-file" multiple hidden tabindex="-1" />
         <textarea class="chat-input" rows="2" maxlength="${MAX_CHAT_UNITS}" placeholder="Nhập tin nhắn (Enter gửi, Shift+Enter xuống dòng)"
           aria-label="Tin nhắn chat" autocomplete="off"></textarea>
@@ -112,7 +113,7 @@ export function createChatPanel(root: HTMLElement, h: ChatPanelHandlers): ChatPa
       </div>
     </div>
     <div class="chat-pane chat-pane-clipboard" role="tabpanel" hidden>
-      <button type="button" class="clip-paste" title="Gửi văn bản trong clipboard của thiết bị này sang máy Windows rồi dán (Ctrl+V)">Dán sang Windows</button>
+      <button type="button" class="clip-paste" title="Gửi văn bản trong clipboard của thiết bị này sang máy Windows rồi dán (Ctrl+V)">${icon('paste')}Dán sang Windows</button>
       <p class="clip-empty">Chưa có gì. Bật Clipboard trên thanh công cụ: dán (⌘V / Ctrl+V) trong màn hình điều khiển, hoặc bấm "Dán sang Windows", sẽ gửi văn bản sang Windows; văn bản copy trên Windows sẽ được chép về đây.</p>
       <ol class="clip-list"></ol>
     </div>`;
