@@ -7,6 +7,10 @@
 // the sent log and `permission(allowed)` / `end()` to simulate commands 49 and 27. The remote
 // pointer follows the last mouse message: shape 1001 (red DIB arrow) while the button is up,
 // 1002 (green PNG-in-CUR ring) while it is down; shapes are only sent when the page asks (`4|||hash`).
+// Chat is echoed back ("typing", then "Đã nhận: …"); `uvFake.chat(text)`, `uvFake.typing(on)` and
+// `uvFake.clipboard(text)` simulate the Windows side (clipboard only while sharing is on).
+import { chatMessagePayload } from '../proto/chat';
+import { clipboardPayload } from '../proto/clipboard';
 import { commandPayload, type RemoteCommand, type RemoteMonitor } from '../proto/commands';
 import type { ScreenBitmap } from '../proto/screen-renderer';
 import {
@@ -85,6 +89,9 @@ interface FakeHooks {
   sent: string[];
   permission(allowed: boolean): void;
   end(): void;
+  chat(text: string): void;
+  typing(on: boolean): void;
+  clipboard(text: string): void;
 }
 
 declare global {
@@ -138,6 +145,50 @@ class DevFakeSession implements ViewerSession {
       if (this.state === 'active') this.on({ type: 'inputPermission', allowed });
     };
     hooks.end = () => this.finish('partnerEnded');
+    hooks.chat = (text) => {
+      if (this.canUseSessionTools()) this.on({ type: 'chat', text });
+    };
+    hooks.typing = (typing) => {
+      if (this.canUseSessionTools()) this.on({ type: 'typing', typing });
+    };
+    hooks.clipboard = (text) => {
+      if (this.canUseSessionTools() && this.clipboardAllowed) this.on({ type: 'clipboard', text });
+    };
+  }
+
+  private clipboardAllowed = false;
+  private toolsOpen = false;
+
+  canUseSessionTools(): boolean {
+    return this.diag.peerAccepted && (this.state === 'active' || this.state === 'login');
+  }
+
+  async sendChat(text: string): Promise<void> {
+    if (!this.canUseSessionTools()) throw new RelaySessionError('toolsUnavailable');
+    chatMessagePayload(text);
+    this.hooks.sent.push(`chat (${text.length} ký tự)`);
+    this.render();
+    setTimeout(() => this.hooks.typing(true), 400);
+    setTimeout(() => this.hooks.chat(`Đã nhận: ${text}`), 1500);
+  }
+
+  async sendTyping(typing: boolean): Promise<void> {
+    if (!this.canUseSessionTools()) throw new RelaySessionError('toolsUnavailable');
+    this.hooks.sent.push(`unicode ${typing ? '29' : '30'}`);
+    this.render();
+  }
+
+  setClipboardSharing(on: boolean): void {
+    if (!this.canUseSessionTools()) throw new RelaySessionError('toolsUnavailable');
+    this.clipboardAllowed = on;
+  }
+
+  async sendClipboard(text: string): Promise<void> {
+    if (!this.canUseSessionTools()) throw new RelaySessionError('toolsUnavailable');
+    if (!this.clipboardAllowed) throw new RelaySessionError('clipboardDisabled');
+    clipboardPayload(text);
+    this.hooks.sent.push(`clipboard (${text.length} ký tự)`);
+    this.render();
   }
 
   get phase(): SessionPhase {
@@ -200,6 +251,10 @@ class DevFakeSession implements ViewerSession {
     this.state = 'active';
     this.diag.peerAccepted = true;
     this.on({ type: 'accepted', peer: this.peer });
+    if (!this.toolsOpen) {
+      this.toolsOpen = true;
+      this.on({ type: 'tools', available: true });
+    }
     this.shown = 0;
     this.emitCursor();
     this.timer ??= setInterval(() => this.render(), 1000);
@@ -228,6 +283,11 @@ class DevFakeSession implements ViewerSession {
   private finish(reason: 'partnerEnded' | null): void {
     if (this.state === 'closed') return;
     this.state = 'closed';
+    this.clipboardAllowed = false;
+    if (this.toolsOpen) {
+      this.toolsOpen = false;
+      this.on({ type: 'tools', available: false });
+    }
     if (this.timer !== null) clearInterval(this.timer);
     this.timer = null;
     this.on({ type: 'closed', reason });
@@ -285,7 +345,7 @@ class DevFakeSession implements ViewerSession {
 }
 
 export function createDevFakeSession(params: URLSearchParams): ViewerDeps['createSession'] {
-  const hooks: FakeHooks = { sent: [], permission: () => {}, end: () => {} };
+  const hooks: FakeHooks = { sent: [], permission: () => {}, end: () => {}, chat: () => {}, typing: () => {}, clipboard: () => {} };
   window.uvFake = hooks;
   return () => new DevFakeSession(hooks, params);
 }

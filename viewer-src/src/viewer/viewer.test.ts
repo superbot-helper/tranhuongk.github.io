@@ -1,90 +1,18 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import type { RemoteCommand, RemoteMonitor } from '../proto/commands';
+import type { RemoteMonitor } from '../proto/commands';
 import { packedPosition } from '../proto/mouse';
-import type { ConnectOptions, Peer, SessionDiagnostics, SessionEvent, SessionPhase } from '../session/relay-session';
+import type { Peer } from '../session/relay-session';
 import { curFile, dib } from './cur-test-utils';
-import { mountViewer, type ViewerHandle, type ViewerSession } from './viewer';
+import { packet, peer, settle, TestSession } from './test-session';
+import { mountViewer, type ViewerHandle } from './viewer';
 
 // The jsdom (web) transform refuses the bundled *.pem?raw trust anchors (Vite fs.deny); the
 // page under test never opens TLS, so the trust module is stubbed.
 vi.mock('../net/trust', () => ({ checkServerChain: vi.fn(), defaultAnchors: () => [] }));
 
-const DIAGNOSTICS: SessionDiagnostics = {
-  registrationAccepted: false, assignedID: null, lookupStatus: null, peerTransportOpened: false,
-  loginSent: false, peerAccepted: false, decodedFrames: 0, decodeMsTotal: 0, decodeMsMax: 0,
-  screenPayloadBytes: 0, screenRefreshes: 0, lastScreenFailure: null, relayKeepalivesSent: 0,
-  commandKeepalivesSent: 0, relayPongs: 0, relayRttMs: null, peerRttMs: null, ignoredMessages: 0,
-  ignoredSources: 0,
-};
-
-/** Records what the viewer sends; the test drives session events by hand. */
-class TestSession implements ViewerSession {
-  phase: SessionPhase = 'closed';
-  readonly diagnostics = DIAGNOSTICS;
-  /** ASCII messages as text, binary keyboard packets as number arrays. */
-  readonly sent: Array<string | number[]> = [];
-  readonly commands: Array<{ c: RemoteCommand; requiresControl: boolean }> = [];
-  refreshes = 0;
-  closedAt = -1;
-  options: ConnectOptions | null = null;
-  private on: ((e: SessionEvent) => void) | null = null;
-
-  connect(o: ConnectOptions, on: (e: SessionEvent) => void): void {
-    this.options = o;
-    this.on = on;
-    this.phase = 'registering';
-  }
-
-  async send(bytes: Uint8Array, formatFlag = false): Promise<void> {
-    if (this.phase === 'closed') throw new Error('notConnected');
-    expect(formatFlag).toBe(false);
-    this.sent.push(bytes[0] === 30 ? [...bytes] : new TextDecoder().decode(bytes));
-  }
-
-  async sendCommand(c: RemoteCommand, opts: { requiresControl: boolean }): Promise<void> {
-    this.commands.push({ c, requiresControl: opts.requiresControl });
-  }
-
-  async refreshScreen(): Promise<void> {
-    this.refreshes++;
-  }
-
-  close(): void {
-    this.closedAt = this.sent.length;
-    this.phase = 'closed';
-    this.on?.({ type: 'closed', reason: null });
-  }
-
-  emit(e: SessionEvent): void {
-    if (e.type === 'accepted') this.phase = 'active';
-    if (e.type === 'closed') this.phase = 'closed';
-    this.on?.(e);
-  }
-}
-
-function peer(over: Partial<Peer> = {}): Peer {
-  return {
-    displayName: 'PC',
-    version: '6.6.0',
-    width: 1920,
-    height: 1080,
-    virtualLeft: 0,
-    virtualTop: 0,
-    supportsBinaryKeyboard: true,
-    allowsRemoteInput: true,
-    monitors: [],
-    ...over,
-  };
-}
-
 const key = (code: string, key: string, over: Partial<KeyInit> = {}): KeyInit => ({ code, key, ...over });
 type KeyInit = KeyboardEventInit & { code: string; key: string };
-
-/** Keyboard packet `[30,|,|,|, kind, vk, scanLE, charLE, caps]`. */
-const packet = (kind: number, vk: number, scan: number, char = 0) => [30, 124, 124, 124, kind, vk, scan & 0xff, scan >> 8, char & 0xff, char >> 8, 0];
-
-const settle = () => new Promise<void>((r) => setTimeout(r, 0));
 
 describe('desktop viewer page', () => {
   let session: TestSession;

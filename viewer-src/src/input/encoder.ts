@@ -185,6 +185,11 @@ export class InputEncoder {
     return [mouseWheelText(wheelWParam(steps * 120, this.mouseFlags()), packed(this.pointer))];
   }
 
+  /** A key of this modifier group is down on the remote side. */
+  holdsModifier(group: 'shift' | 'control' | 'option' | 'command'): boolean {
+    return this.holds(group);
+  }
+
   /**
    * Release everything held: ordinary keys (reverse press order) while modifiers stay down,
    * then mouse buttons (reverse press order), then keys still held (modifiers, reverse order).

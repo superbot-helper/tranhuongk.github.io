@@ -6,6 +6,9 @@
 // Touch pointers (pointerType 'touch') are left to viewer/touch.ts (trackpad mode), which comes
 // back through the trackpad* methods; a real mouse or pen keeps the desktop path here. Switching
 // between the two releases everything held first.
+// Paste (Task 5, Review Focus 1): the ⌘V / Ctrl+V keydown is kept off the VK path (Win+V would
+// open the Windows clipboard history) and left to the browser, whose `paste` event on the textarea
+// hands the text to `onPaste` (clipboard sync); a Ctrl+V combination is then typed on Windows.
 import { InputEncoder, type InputMessage, type KeyInput, type PointerButton, type WheelMode } from '../input/encoder';
 import { toRemote, type View } from '../input/geometry';
 import { codeToKey } from '../input/keymap';
@@ -57,6 +60,11 @@ const FLUSH_WAIT_TICKS = 50;
 
 const ascii = new TextEncoder();
 
+/** ⌘V / Ctrl+V (Shift allowed: paste as plain text), not AltGr+V. */
+function isPasteShortcut(e: KeyboardEvent): boolean {
+  return e.code === 'KeyV' && (e.metaKey || e.ctrlKey) && !e.altKey;
+}
+
 function isButton(b: number): b is PointerButton {
   return b === 0 || b === 1 || b === 2;
 }
@@ -71,6 +79,11 @@ export interface DesktopInputOptions {
   onOverflow: () => void;
   /** A send failed (once per started sink). */
   onSendError: (e: unknown) => void;
+  /**
+   * The user pasted while controlling: `text` is the local clipboard's text/plain ('' when none).
+   * Resolve true to type Ctrl+V on Windows afterwards (default when absent).
+   */
+  onPaste?: (text: string) => boolean | Promise<boolean>;
   capacity?: number;
 }
 
@@ -104,6 +117,7 @@ export class DesktopInput {
     this.listen(canvas, 'wheel', (e) => this.onWheel(e as WheelEvent), { passive: false });
     this.listen(canvas, 'contextmenu', (e) => e.preventDefault());
     this.listen(textarea, 'blur', () => this.releaseAll());
+    this.listen(textarea, 'paste', (e) => void this.onPaste(e as ClipboardEvent));
     this.listen(window, 'blur', () => this.releaseAll());
     this.listen(window, 'pagehide', () => this.releaseAll());
     this.listen(document, 'visibilitychange', () => {
@@ -200,6 +214,25 @@ export class DesktopInput {
       };
       this.push(step.down ? encoder.keyDown(input) : encoder.keyUp(input));
     }
+  }
+
+  /**
+   * Ctrl+V on Windows. A Ctrl the user already holds stays held. After ⌘V the Win key is down on
+   * the remote: Ctrl goes down while it is still held (so lifting Win alone does not open the Start
+   * menu), then V's own flags lift Win before V is pressed.
+   */
+  sendPasteShortcut(): void {
+    if (!this.keyboardActive()) return;
+    const encoder = this.encoder!;
+    const ctrlHeld = encoder.holdsModifier('control');
+    const base = { shift: false, alt: false, capsLock: this.capsLock, repeat: false };
+    const ctrl = { ...base, code: 'ControlLeft', key: 'Control' };
+    const v = { ...base, code: 'KeyV', key: 'v', ctrl: true, meta: false };
+    const out: InputMessage[] = [];
+    if (!ctrlHeld) out.push(...encoder.keyDown({ ...ctrl, ctrl: true, meta: encoder.holdsModifier('command') }));
+    out.push(...encoder.keyDown(v), ...encoder.keyUp(v));
+    if (!ctrlHeld) out.push(...encoder.keyUp({ ...ctrl, ctrl: false, meta: false }));
+    this.push(out);
   }
 
   /** Trackpad mode (touch): move the remote pointer to `p` (wire coordinates). False when not sent. */
@@ -314,6 +347,11 @@ export class DesktopInput {
   private onKey(e: KeyboardEvent, down: boolean): void {
     this.capsLock = e.getModifierState?.('CapsLock') ?? this.capsLock;
     if (!this.keyboardActive()) return;
+    if (down && isPasteShortcut(e)) {
+      // Not prevented: the browser's paste runs and `paste` follows (onPaste). Its keyup is dropped.
+      this.textKeys.add(e.code);
+      return;
+    }
     if (codeToKey(e.code) !== null) e.preventDefault();
     // A new keydown ends an earlier text press of the same key; macOS drops keyups of keys released
     // under Cmd (the encoder releases them on Meta up), so Meta up forgets every text press too.
@@ -331,6 +369,17 @@ export class DesktopInput {
       repeat: e.repeat,
     };
     this.push(down ? this.encoder!.keyDown(input) : this.encoder!.keyUp(input));
+  }
+
+  private async onPaste(e: ClipboardEvent): Promise<void> {
+    // The textarea only captures keys: pasted text never lands in it.
+    e.preventDefault();
+    if (!this.active()) return;
+    const text = e.clipboardData?.getData('text/plain') ?? '';
+    const encoder = this.encoder;
+    const proceed = this.o.onPaste ? await this.o.onPaste(text) : true;
+    // The upload may have taken a while: only type into the same, still controlled, session.
+    if (proceed && this.encoder === encoder && this.active()) this.sendPasteShortcut();
   }
 
   private onText(s: string, source?: KeyboardEvent): void {

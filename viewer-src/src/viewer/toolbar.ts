@@ -1,5 +1,5 @@
-// Viewer toolbar: Điều khiển, Màn hình, Scale, Chất lượng, Ẩn wallpaper, Phím, Toàn màn hình,
-// Làm mới, Ngắt. Pure DOM: it reports choices to the handlers and shows the state it is given.
+// Viewer toolbar: Điều khiển, Màn hình, Scale, Chất lượng, Ẩn wallpaper, Phím, Chat (unread
+// badge), Clipboard (opt-in sharing), Toàn màn hình, Làm mới, Ngắt. Pure DOM: it reports choices to the handlers and shows the state it is given.
 import type { QualityPreset, RemoteMonitor } from '../proto/commands';
 import type { SyntheticKey } from './input';
 import type { ScaleMode } from './screen';
@@ -14,6 +14,10 @@ export interface ToolbarHandlers {
   quality(preset: QualityPreset): void;
   wallpaper(hidden: boolean): void;
   special(key: SpecialKey): void;
+  /** Open or close the chat panel. */
+  chat(): void;
+  /** Clipboard sharing switched by the user. */
+  clipboard(on: boolean): void;
   fullscreen(): void;
   refresh(): void;
   disconnect(): void;
@@ -36,6 +40,9 @@ export interface Toolbar {
   setFullscreen(active: boolean): void;
   /** Open the special-keys menu (the floating "Phím" button on touch devices). */
   openSpecialKeys(): void;
+  setChat(s: { open: boolean; unread: number }): void;
+  /** `reason` explains a disabled button (tools unavailable). */
+  setClipboard(s: { on: boolean; available: boolean; reason?: string }): void;
   /** Back to defaults for a new session. */
   reset(): void;
 }
@@ -69,6 +76,8 @@ export function createToolbar(root: HTMLElement, h: ToolbarHandlers, o: { fullsc
       <summary>Phím</summary>
       <div class="menu-items">${SPECIAL_KEYS.map(([k, label]) => `<button type="button" data-special="${k}">${label}</button>`).join('')}</div>
     </details>
+    <button id="chat-toggle" type="button" aria-expanded="false" aria-controls="chat-panel">Chat <span class="badge" hidden></span></button>
+    <button id="clipboard-toggle" type="button" aria-pressed="false">Clipboard: tắt</button>
     <button id="fullscreen" type="button" aria-pressed="false">Toàn màn hình</button>
     <button id="refresh" type="button">Làm mới</button>
     <button id="toolbar-disconnect" type="button" class="danger">Ngắt</button>`;
@@ -81,6 +90,9 @@ export function createToolbar(root: HTMLElement, h: ToolbarHandlers, o: { fullsc
   const wallpaper = $<HTMLInputElement>('wallpaper');
   const special = $<HTMLDetailsElement>('special-keys');
   const fullscreen = $<HTMLButtonElement>('fullscreen');
+  const chat = $<HTMLButtonElement>('chat-toggle');
+  const badge = chat.querySelector<HTMLSpanElement>('.badge')!;
+  const clipboard = $<HTMLButtonElement>('clipboard-toggle');
   const specialButtons = [...root.querySelectorAll<HTMLButtonElement>('[data-special]')];
   fullscreen.disabled = !o.fullscreenSupported;
   if (!o.fullscreenSupported) fullscreen.title = 'Trình duyệt này không hỗ trợ toàn màn hình cho trang.';
@@ -103,6 +115,8 @@ export function createToolbar(root: HTMLElement, h: ToolbarHandlers, o: { fullsc
       h.special(b.dataset.special as SpecialKey);
     });
   }
+  chat.addEventListener('click', () => h.chat());
+  clipboard.addEventListener('click', () => h.clipboard(clipboard.getAttribute('aria-pressed') !== 'true'));
   fullscreen.addEventListener('click', () => h.fullscreen());
   $<HTMLButtonElement>('refresh').addEventListener('click', () => h.refresh());
   $<HTMLButtonElement>('toolbar-disconnect').addEventListener('click', () => h.disconnect());
@@ -135,6 +149,20 @@ export function createToolbar(root: HTMLElement, h: ToolbarHandlers, o: { fullsc
     openSpecialKeys() {
       special.open = true;
       special.scrollIntoView?.({ block: 'nearest' });
+    },
+    setChat(s) {
+      chat.setAttribute('aria-expanded', String(s.open));
+      badge.hidden = s.unread === 0;
+      badge.textContent = s.unread > 99 ? '99+' : String(s.unread);
+      chat.setAttribute('aria-label', s.unread > 0 ? `Chat (${s.unread} tin chưa đọc)` : 'Chat');
+    },
+    setClipboard(s) {
+      clipboard.setAttribute('aria-pressed', String(s.on));
+      clipboard.textContent = s.on ? 'Clipboard: bật' : 'Clipboard: tắt';
+      clipboard.disabled = !s.available;
+      clipboard.title = s.available
+        ? 'Chia sẻ văn bản clipboard hai chiều với máy Windows: dán (⌘V / Ctrl+V) trong màn hình để gửi.'
+        : (s.reason ?? '');
     },
     reset() {
       special.open = false;

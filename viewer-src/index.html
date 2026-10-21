@@ -71,6 +71,49 @@
                               touch-action: manipulation; -webkit-user-select: none; user-select: none; }
       .connected .touch-buttons.touch-seen { display: flex; }
       @media (pointer: coarse) { .connected .touch-buttons { display: flex; } }
+      /* Chat: desktop = panel on the right of the stage; coarse pointer (phone/tablet, as touch.ts) or narrow = bottom sheet. */
+      #stage { position: relative; }
+      .toolbar .badge { display: inline-block; min-width: 1.2em; padding: 0 5px; margin-left: 2px; border-radius: 10px;
+                        background: #d32f2f; color: #fff; font-size: 0.75rem; font-weight: 600; text-align: center; }
+      .toolbar .badge[hidden] { display: none; }
+      .chat-panel { position: absolute; z-index: 20; top: var(--chat-top, 0); right: 0; bottom: 0; width: min(360px, 100%); box-sizing: border-box;
+                    display: flex; flex-direction: column; background: Canvas; color: CanvasText;
+                    border-left: 1px solid rgba(127, 127, 127, 0.5); box-shadow: -4px 0 16px rgba(0, 0, 0, 0.25); }
+      .chat-panel[hidden] { display: none; }
+      .chat-head { display: flex; align-items: center; gap: 6px; padding: 6px; border-bottom: 1px solid rgba(127, 127, 127, 0.35); flex: none; }
+      .chat-tabs { display: flex; gap: 4px; flex: 1; }
+      .chat-tab, .chat-close { font-size: 0.85rem; padding: 6px 10px; }
+      .chat-tab[aria-selected="true"] { font-weight: 600; outline: 2px solid currentColor; outline-offset: -2px; }
+      .chat-pane { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+      .chat-pane[hidden] { display: none; }
+      .chat-transcript, .clip-list { list-style: none; margin: 0; padding: 8px; overflow-y: auto; flex: 1 1 auto; min-height: 0;
+                                     display: flex; flex-direction: column; gap: 8px; }
+      .chat-message { max-width: 85%; padding: 6px 10px; border-radius: 10px; background: rgba(127, 127, 127, 0.15); align-self: flex-start; }
+      .chat-message.outgoing { align-self: flex-end; background: rgba(33, 150, 243, 0.25); }
+      .chat-text, .clip-text { white-space: pre-wrap; word-break: break-word; font-size: 0.9rem; }
+      .chat-meta, .clip-meta { font-size: 0.7rem; opacity: 0.7; margin-top: 2px; }
+      .chat-typing, .chat-unavailable, .chat-error, .clip-empty { margin: 0; padding: 4px 10px; font-size: 0.8rem; flex: none; }
+      .chat-typing { font-style: italic; opacity: 0.8; }
+      .chat-error { color: #c62828; }
+      .chat-typing[hidden], .chat-unavailable[hidden], .chat-error[hidden], .clip-empty[hidden] { display: none; }
+      .chat-compose { display: flex; gap: 6px; padding: 6px; border-top: 1px solid rgba(127, 127, 127, 0.35); flex: none; }
+      .chat-input { flex: 1; resize: none; font: inherit; font-size: 16px; padding: 6px; box-sizing: border-box; }
+      .chat-send { flex: none; }
+      .clip-entry { padding: 6px 8px; border-radius: 8px; background: rgba(127, 127, 127, 0.12); display: flex; flex-direction: column; gap: 4px; }
+      .clip-entry .clip-text { max-height: 6.5em; overflow: hidden; }
+      .clip-copy { align-self: flex-end; font-size: 0.8rem; padding: 4px 10px; }
+      @media (pointer: coarse), (max-width: 600px) {
+        .chat-panel { position: fixed; top: auto; left: 0; right: 0; width: auto; height: min(70dvh, 560px);
+                      border-left: 0; border-top: 1px solid rgba(127, 127, 127, 0.5); border-radius: 12px 12px 0 0;
+                      box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.3);
+                      padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+      }
+      /* Clipboard notices; the "Sao chép" button writes inside its own click when the browser refused. */
+      .toast { position: absolute; z-index: 25; left: 50%; bottom: 16px; transform: translateX(-50%); max-width: calc(100% - 32px);
+               display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 8px; font-size: 0.9rem;
+               background: rgba(20, 20, 20, 0.9); color: #fff; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35); }
+      .toast[hidden], .toast button[hidden] { display: none; }
+      .toast button { font-size: 0.85rem; padding: 4px 10px; }
       details#diagnostics { flex: none; }
       details#diagnostics label, details#diagnostics button { margin-top: 8px; }
       #stats { font-size: 0.8rem; opacity: 0.75; margin: 4px 0; min-height: 1em; }

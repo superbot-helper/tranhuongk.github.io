@@ -4,6 +4,9 @@
 // The permission is re-read from `peer.allowsRemoteInput` on every `accepted`, because a screen
 // refresh (or host command 23) re-initializes with `inputPermission(false)` before it and no
 // `inputPermission(true)` after it.
+// Chat (panel + unread badge) and opt-in clipboard sharing work while the session's tool gate is
+// open (`tools` events), independent of control; pasting into the controlled screen uploads the
+// clipboard (when sharing is on) and types Ctrl+V on Windows.
 import { DEFAULT_DISPLAY_NAME } from '../proto/client-defaults';
 import { monitorRegion, type QualityPreset, type RemoteCommand } from '../proto/commands';
 import { cursorShapeRequest, type CursorEvent } from '../proto/cursor';
@@ -19,6 +22,8 @@ import {
   type SessionPhase,
 } from '../session/relay-session';
 import { connectFormError, formatStats, loadToken, mountDiagnostics, readStorage, REASONS, saveToken } from '../spike/diagnostics';
+import { createChatPanel } from './chat-panel';
+import { ClipboardSync } from './clipboard-sync';
 import { CursorLayer } from './cursor-layer';
 import { DesktopInput } from './input';
 import { ScreenView, type Crop, type ScaleMode } from './screen';
@@ -33,6 +38,11 @@ export interface ViewerSession {
   send(bytes: Uint8Array, formatFlag?: boolean): Promise<void>;
   sendCommand(c: RemoteCommand, opts: { requiresControl: boolean }): Promise<void>;
   refreshScreen(): Promise<void>;
+  canUseSessionTools(): boolean;
+  sendChat(text: string): Promise<void>;
+  sendTyping(typing: boolean): Promise<void>;
+  setClipboardSharing(on: boolean): void;
+  sendClipboard(text: string): Promise<void>;
   close(): void;
 }
 
@@ -55,6 +65,9 @@ const OLD_PEER_NOTICE = 'Máy Windows dùng UltraViewer cũ (< 6.2.13): chỉ đ
 const VIEW_ONLY_NOTICE = 'Máy Windows đang để chế độ chỉ xem: chuột và bàn phím không được gửi.';
 /** After a trackpad move, host pointer positions (older, by the round trip) are not drawn for this long. */
 const LOCAL_POINTER_HOLD_MS = 500;
+const TOOLS_UNAVAILABLE = 'Chat và clipboard dùng được khi đã kết nối xong với máy Windows.';
+/** "1" when clipboard sharing should start on (stored only with "Nhớ trên thiết bị này"). */
+export const CLIPBOARD_STORAGE_KEY = 'uvweb.clipboard';
 const OVERFLOW_NOTICE = 'Hàng đợi chuột/bàn phím bị đầy: đã thả mọi phím và nút, Điều khiển đã tắt. Bật lại để tiếp tục.';
 
 const LAYOUT = `
@@ -89,6 +102,8 @@ const LAYOUT = `
         autocorrect="off" spellcheck="false" tabindex="-1"></textarea>
       <div id="composition" class="composition" aria-hidden="true" hidden></div>
     </div>
+    <div id="chat-panel"></div>
+    <div id="clipboard-toast"></div>
   </section>
   <details id="diagnostics"></details>`;
 
@@ -142,6 +157,18 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     }
   };
   remember.addEventListener('change', persist);
+
+  // Clipboard sharing preference: off by default, kept on the device only when remembered.
+  let clipboardOn = readStorage(() => localStorage, CLIPBOARD_STORAGE_KEY) === '1';
+  const persistClipboard = () => {
+    try {
+      if (remember.checked && clipboardOn) localStorage.setItem(CLIPBOARD_STORAGE_KEY, '1');
+      else localStorage.removeItem(CLIPBOARD_STORAGE_KEY);
+    } catch {
+      // Blocked storage: the choice lives in this tab only.
+    }
+  };
+  remember.addEventListener('change', persistClipboard);
 
   // --- session state ------------------------------------------------------------------------
   let session: ViewerSession | null = null;
@@ -197,6 +224,7 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
       ? new ResizeObserver(() => {
           zoom.refit();
           syncCursorView();
+          placeChat();
         })
       : null;
   resizeObserver?.observe(viewport);
@@ -215,6 +243,7 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     onSendError: (e) => {
       if (session?.phase !== 'closed') log(`Gửi input lỗi: ${e instanceof RelaySessionError ? e.code : (e as Error).name}`);
     },
+    onPaste: (text) => clipboardSync.paste(text),
   });
 
   function onCursorEvent(event: CursorEvent): void {
@@ -316,6 +345,17 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
         else input.sendSynthetic(key);
         focusUnlessTouch();
       },
+      chat: () => {
+        if (chatPanel.isOpen) return chatPanel.close();
+        placeChat();
+        chatPanel.open(undefined, lastPointerType !== 'touch');
+      },
+      clipboard: (on) => {
+        clipboardOn = on;
+        persistClipboard();
+        applyClipboard(true);
+        focusUnlessTouch();
+      },
       fullscreen: () => toggleFullscreen(),
       refresh: () => {
         session?.refreshScreen().catch((e: unknown) => log(`Làm mới lỗi: ${describe(e)}`));
@@ -325,6 +365,46 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     },
     { fullscreenSupported },
   );
+
+  const clipboardSync = new ClipboardSync($<HTMLDivElement>('clipboard-toast'), {
+    send: (text) => (session ? session.sendClipboard(text) : Promise.reject(new RelaySessionError('notConnected'))),
+    history: (entries) => chatPanel.setClipboardHistory(entries),
+    log,
+  });
+  const chatEl = $<HTMLDivElement>('chat-panel');
+  /** The desktop panel starts below the toolbar and notices (level with the screen); see index.html. */
+  function placeChat(): void {
+    chatEl.style.setProperty('--chat-top', `${viewport.offsetTop}px`);
+  }
+  const chatPanel = createChatPanel(chatEl, {
+    send: (text) => (session ? session.sendChat(text) : Promise.reject(new RelaySessionError('notConnected'))),
+    typing: (typing) => session?.sendTyping(typing) ?? Promise.resolve(),
+    copy: (text) => clipboardSync.copy(text),
+    changed: (state) => toolbar.setChat(state),
+    closed: () => focusUnlessTouch(),
+  });
+  let toolsAvailable = false;
+
+  /** Applies the preference to the session (only while the tool gate is open). */
+  function applyClipboard(changed: boolean): void {
+    let effective = false;
+    if (session && toolsAvailable && (changed || clipboardOn)) {
+      try {
+        session.setClipboardSharing(clipboardOn);
+        effective = clipboardOn;
+      } catch (e) {
+        log(`Bật/tắt clipboard lỗi: ${describe(e)}`);
+      }
+    }
+    clipboardSync.setEnabled(effective);
+    toolbar.setClipboard({ on: clipboardOn, available: toolsAvailable, reason: TOOLS_UNAVAILABLE });
+  }
+
+  function setTools(available: boolean): void {
+    toolsAvailable = available;
+    chatPanel.setAvailable(available, TOOLS_UNAVAILABLE);
+    applyClipboard(false);
+  }
 
   const setStatus = (text: string) => {
     statusEl.textContent = text;
@@ -461,6 +541,9 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     controlAllowed = false;
     overflowNotice = false;
     refreshControl();
+    chatPanel.reset();
+    clipboardSync.reset();
+    setTools(false);
     if (clock !== null) clearInterval(clock);
     clock = null;
     renderStats();
@@ -507,6 +590,9 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     overflowNotice = false;
     selectedMonitor = 0;
     toolbar.reset();
+    chatPanel.reset();
+    clipboardSync.reset();
+    setTools(false);
     const size = deps.screenSize?.() ?? {
       width: Math.round(screen.width * devicePixelRatio),
       height: Math.round(screen.height * devicePixelRatio),
@@ -540,6 +626,18 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
               break;
             case 'cursor':
               onCursorEvent(e.event);
+              break;
+            case 'chat':
+              chatPanel.receive(e.text);
+              break;
+            case 'typing':
+              chatPanel.setPeerTyping(e.typing);
+              break;
+            case 'clipboard':
+              clipboardSync.receive(e.text);
+              break;
+            case 'tools':
+              setTools(e.available);
               break;
             case 'closed':
               onClosed(e.reason);
@@ -580,6 +678,7 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
   window.addEventListener('pagehide', onPageHide);
 
   refreshControl();
+  setTools(false);
 
   return {
     destroy() {
@@ -590,6 +689,8 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
       input.detach();
       resizeObserver?.disconnect();
       cursorLayer.dispose();
+      chatPanel.dispose();
+      clipboardSync.dispose();
       if (clock !== null) clearInterval(clock);
       document.removeEventListener('fullscreenchange', onFullscreenChange);
       document.removeEventListener('visibilitychange', onVisibility);
