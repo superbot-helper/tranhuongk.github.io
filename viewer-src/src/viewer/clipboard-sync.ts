@@ -29,12 +29,20 @@ export interface ClipboardSyncDeps {
   log(line: string): void;
   /** Defaults to navigator.clipboard.writeText (missing API = rejected). */
   writeText?: (text: string) => Promise<void>;
+  /** Defaults to navigator.clipboard.readText (missing API = rejected). */
+  readText?: () => Promise<string>;
 }
 
 function defaultWriteText(text: string): Promise<void> {
   const clipboard = typeof navigator === 'undefined' ? undefined : navigator.clipboard;
   if (!clipboard?.writeText) return Promise.reject(new Error('NoClipboardApi'));
   return clipboard.writeText(text);
+}
+
+function defaultReadText(): Promise<string> {
+  const clipboard = typeof navigator === 'undefined' ? undefined : navigator.clipboard;
+  if (!clipboard?.readText) return Promise.reject(new Error('NoClipboardApi'));
+  return clipboard.readText();
 }
 
 function errorName(e: unknown): string {
@@ -53,12 +61,14 @@ export class ClipboardSync {
   private readonly textEl: HTMLSpanElement;
   private readonly copyButton: HTMLButtonElement;
   private readonly writeText: (text: string) => Promise<void>;
+  private readonly readText: () => Promise<string>;
 
   constructor(
     private readonly toast: HTMLElement,
     private readonly deps: ClipboardSyncDeps,
   ) {
     this.writeText = deps.writeText ?? defaultWriteText;
+    this.readText = deps.readText ?? defaultReadText;
     toast.classList.add('toast');
     toast.setAttribute('role', 'status');
     toast.hidden = true;
@@ -123,6 +133,44 @@ export class ClipboardSync {
     return true;
   }
 
+  /**
+   * "Dán sang Windows" (phones have no paste shortcut): reads this device's clipboard. Call it
+   * directly inside the click (browsers allow the read only with that user gesture). Resolves the
+   * text to hand to `paste()`, or null with the reason shown when nothing should be pasted
+   * (sharing off, read refused, empty). The text is never logged.
+   */
+  readLocal(): Promise<string | null> {
+    if (!this.on) {
+      this.notice('Bật Clipboard trên thanh công cụ trước khi dán sang Windows.');
+      return Promise.resolve(null);
+    }
+    let pending: Promise<string>;
+    try {
+      pending = this.readText();
+    } catch (e) {
+      pending = Promise.reject(e);
+    }
+    return pending.then(
+      (text) => {
+        if (typeof text !== 'string' || text === '') {
+          this.notice('Clipboard của thiết bị này đang trống.');
+          return null;
+        }
+        return text;
+      },
+      (e: unknown) => {
+        this.deps.log(`Đọc clipboard bị trình duyệt từ chối (${errorName(e)})`);
+        this.notice('Trình duyệt không cho đọc clipboard: cho phép "Dán" khi được hỏi, hoặc dùng ⌘V / Ctrl+V.');
+        return null;
+      },
+    );
+  }
+
+  /** A short notice (fades by itself). */
+  notice(text: string): void {
+    this.show(text, false);
+  }
+
   /** Windows copied `text` (only delivered while sharing is on). */
   receive(text: string): void {
     if (!this.on || text.length > MAX_CLIPBOARD_UNITS || text === this.lastText) return;
@@ -167,10 +215,6 @@ export class ClipboardSync {
   private record(text: string, outgoing: boolean): void {
     this.entries = [{ text, outgoing, at: new Date() }, ...this.entries].slice(0, CLIPBOARD_HISTORY_MAX);
     this.deps.history(this.entries);
-  }
-
-  private notice(text: string): void {
-    this.show(text, false);
   }
 
   private show(text: string, withCopy: boolean): void {

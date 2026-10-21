@@ -118,6 +118,7 @@
       .drop-overlay[hidden] { display: none; }
       .clip-entry { padding: 6px 8px; border-radius: 8px; background: rgba(127, 127, 127, 0.12); display: flex; flex-direction: column; gap: 4px; }
       .clip-entry .clip-text { max-height: 6.5em; overflow: hidden; }
+      .clip-paste { align-self: flex-start; margin: 8px 10px 0; min-height: 40px; padding: 6px 14px; flex: none; }
       .clip-copy { align-self: flex-end; font-size: 0.8rem; padding: 4px 10px; }
       @media (pointer: coarse), (max-width: 600px) {
         .chat-panel { position: fixed; top: auto; left: 0; right: 0; width: auto; height: min(70dvh, 560px);
@@ -132,6 +133,7 @@
       .toast[hidden], .toast button[hidden] { display: none; }
       .toast button { font-size: 0.85rem; padding: 4px 10px; }
       .capture-toast { bottom: 64px; }
+      #file-toast { bottom: 112px; }
       /* Screenshot annotator: a full-page modal; the canvas takes every touch (drawing), buttons stay finger-sized. */
       .cap-modal { position: fixed; inset: 0; z-index: 100; display: flex; flex-direction: column; box-sizing: border-box;
                    background: #0c0c0c; color: #fff; touch-action: none;

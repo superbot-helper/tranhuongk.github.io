@@ -1,6 +1,7 @@
 // Notices for captures and recordings, in their own toast (the clipboard has one too). A plain
 // notice fades after a few seconds; an offer with an action button ("Tải video về") stays until
 // it is used or closed with × — the button's click is the user gesture the download needs.
+// An action may show a follow-up offer from its own `run` (one download per click); the toast then stays.
 
 export const CAPTURE_NOTICE_MS = 6_000;
 
@@ -34,6 +35,8 @@ export function createCaptureToast(el: HTMLElement): CaptureToast {
   const close = el.querySelector<HTMLButtonElement>('.toast-close')!;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let current: CaptureToastAction | null = null;
+  /** Bumped by every show(): an action that offers again (the next file) keeps the toast open. */
+  let shown = 0;
 
   // The toast's buttons never take the keyboard from the remote screen.
   el.addEventListener('mousedown', (e) => {
@@ -56,6 +59,7 @@ export function createCaptureToast(el: HTMLElement): CaptureToast {
 
   function show(message: string, a: CaptureToastAction | null): void {
     clearTimer();
+    shown++;
     const previous = current;
     current = a;
     previous?.discard?.();
@@ -70,8 +74,9 @@ export function createCaptureToast(el: HTMLElement): CaptureToast {
     const used = current;
     if (!used) return;
     current = null; // used, not discarded
+    const before = shown;
     used.run();
-    hide();
+    if (shown === before) hide();
   });
   close.addEventListener('click', hide);
 

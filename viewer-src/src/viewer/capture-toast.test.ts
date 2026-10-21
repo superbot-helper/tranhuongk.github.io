@@ -55,4 +55,18 @@ describe('capture toast', () => {
     toast.dispose();
     expect(el.hidden).toBe(true);
   });
+
+  test('an action that offers again from its run keeps the toast open (one download per click)', () => {
+    const second = vi.fn();
+    toast.offer('2 file', {
+      label: 'Tải 2',
+      run: () => toast.offer('1 file', { label: 'Tải 1', run: second }),
+    });
+    action().click();
+    expect(el.hidden).toBe(false);
+    expect(action().textContent).toBe('Tải 1');
+    action().click();
+    expect(second).toHaveBeenCalledTimes(1);
+    expect(el.hidden).toBe(true);
+  });
 });

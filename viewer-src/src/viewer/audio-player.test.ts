@@ -91,6 +91,45 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('AudioPlayer', () => {
+  test('sets the playback audio session (iPhone silent switch) before creating the context, synchronously', () => {
+    const order: string[] = [];
+    const session = {
+      set type(v: string) {
+        order.push(`type=${v}`);
+      },
+    };
+    vi.stubGlobal('navigator', { audioSession: session });
+    class Tracking extends FakeContext {
+      constructor(o: { sampleRate?: number } = {}) {
+        super(o);
+        order.push('context');
+      }
+    }
+    vi.stubGlobal('AudioContext', Tracking);
+    void new AudioPlayer().start();
+    expect(order).toEqual(['type=playback', 'context']);
+  });
+
+  test('a throwing audioSession does not stop the player from starting', async () => {
+    vi.stubGlobal('navigator', {
+      audioSession: {
+        set type(_v: string) {
+          throw new Error('nope');
+        },
+      },
+    });
+    const player = new AudioPlayer();
+    await player.start();
+    expect(player.running).toBe(true);
+  });
+
+  test('start works when the browser has no audioSession', async () => {
+    vi.stubGlobal('navigator', {});
+    const player = new AudioPlayer();
+    await player.start();
+    expect(player.running).toBe(true);
+  });
+
   test('start creates a 48 kHz context, loads the worklet module and wires node -> gain -> output', async () => {
     const player = new AudioPlayer();
     await player.start();

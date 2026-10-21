@@ -41,6 +41,7 @@ describe('touch trackpad mode', () => {
     zoomScale: () => zoomScale,
     showKeyboard: () => calls.push(['keyboard']),
     specialKeys: () => calls.push(['specialKeys']),
+    pasteLocal: () => calls.push(['pasteLocal']),
     cancel: () => calls.push(['cancel']),
     enabled: () => enabled,
     remotePosition: () => host,
@@ -367,8 +368,12 @@ describe('touch trackpad mode', () => {
     touch('pointerup', 1, 900, 500, {}, keyboard);
     keyboard.click();
     keys.click();
+    const paste = el.querySelector<HTMLButtonElement>('[data-touch="paste"]')!;
+    expect(paste.textContent).toBe('Dán');
+    expect(paste.getAttribute('aria-label')).toBe('Dán sang Windows');
+    paste.click();
     vi.advanceTimersByTime(500);
-    expect(calls).toEqual([['keyboard'], ['specialKeys']]);
+    expect(calls).toEqual([['keyboard'], ['specialKeys'], ['pasteLocal']]);
     // The first touch reveals the buttons on devices that do not match (pointer: coarse).
     expect(el.querySelector('.touch-buttons')!.classList.contains('touch-seen')).toBe(true);
     detach();

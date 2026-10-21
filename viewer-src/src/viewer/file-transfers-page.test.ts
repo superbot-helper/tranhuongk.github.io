@@ -157,4 +157,105 @@ describe('file transfer in the viewer page', () => {
     expect($('#log').textContent).not.toContain('bí-mật');
     expect($('#log').textContent).not.toContain('riêng-tư');
   });
+
+  describe('received files nobody downloaded when the session ends', () => {
+    let downloads: string[];
+    let revoked: string[];
+    const fileToast = () => $<HTMLElement>('#file-toast');
+    const fileToastButton = () => fileToast().querySelector<HTMLButtonElement>('.toast-action')!;
+
+    beforeEach(() => {
+      downloads = [];
+      revoked = [];
+      let n = 0;
+      URL.createObjectURL = () => `blob:f/${++n}`;
+      URL.revokeObjectURL = (u) => void revoked.push(u);
+      vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+        downloads.push(this.download);
+      });
+    });
+
+    async function receive(id: string, name: string, bytes: number[]): Promise<void> {
+      session.emit({ type: 'file', event: { type: 'incoming', id, name, size: bytes.length } });
+      const card = [...app.querySelectorAll<HTMLElement>('#chat-panel .file-card')].find((c) => c.querySelector('.file-name')!.textContent === name)!;
+      card.querySelector<HTMLButtonElement>('.file-save')!.click();
+      await settle();
+      const sink = session.accepted.get(id)!;
+      session.emit({ type: 'file', event: { type: 'progress', id, bytes: 0, total: bytes.length, direction: 'in' } });
+      await sink.write(new Uint8Array(bytes));
+      await sink.close();
+      session.emit({ type: 'file', event: { type: 'completed', id } });
+    }
+
+    test('one finished, unclaimed file is offered after the disconnect and downloads inside the click', async () => {
+      connect();
+      await receive('r1', 'plan.pdf', [1, 2, 3]);
+      expect(fileToast().hidden).toBe(true);
+      session.close();
+      expect(fileToast().hidden).toBe(false);
+      expect(fileToastButton().textContent).toBe('Tải về 1 file đã nhận');
+      expect(downloads).toEqual([]);
+      fileToastButton().click();
+      expect(downloads).toEqual(['plan.pdf']);
+      expect(fileToast().hidden).toBe(true);
+    });
+
+    test('several files: one download per click, the offer stays with the rest', async () => {
+      connect();
+      await receive('r1', 'a.bin', [1]);
+      await receive('r2', 'b.bin', [2]);
+      await receive('r3', 'c.bin', [3]);
+      cardDownload('b.bin').click(); // claimed by hand: not offered
+      session.close();
+      expect(fileToastButton().textContent).toBe('Tải về 2 file đã nhận');
+      expect(downloads).toEqual(['b.bin']);
+      fileToastButton().click();
+      expect(downloads).toEqual(['b.bin', 'a.bin']);
+      expect(fileToast().hidden).toBe(false);
+      expect(fileToastButton().textContent).toBe('Tải về 1 file đã nhận');
+      fileToastButton().click();
+      expect(downloads).toEqual(['b.bin', 'a.bin', 'c.bin']);
+      expect(fileToast().hidden).toBe(true);
+    });
+
+    test('dismissing (×) releases the files: nothing can be downloaded afterwards', async () => {
+      connect();
+      await receive('r1', 'a.bin', [1]);
+      session.close();
+      fileToast().querySelector<HTMLButtonElement>('.toast-close')!.click();
+      expect(fileToast().hidden).toBe(true);
+      expect(cardDownload('a.bin').hidden).toBe(true);
+      expect(downloads).toEqual([]);
+    });
+
+    test('the next connection releases the offer', async () => {
+      connect();
+      await receive('r1', 'a.bin', [1]);
+      session.close();
+      expect(fileToast().hidden).toBe(false);
+      connect();
+      expect(fileToast().hidden).toBe(true);
+      expect(downloads).toEqual([]);
+    });
+
+    test('nothing is offered for canceled, failed or outgoing files, nor when none finished', async () => {
+      connect();
+      session.emit({ type: 'file', event: { type: 'incoming', id: 'r1', name: 'x.bin', size: 5 } });
+      session.close();
+      expect(fileToast().hidden).toBe(true);
+    });
+
+    test('the offer text never reaches the diagnostics log', async () => {
+      connect();
+      await receive('r1', 'bí-mật.docx', [1]);
+      session.close();
+      expect($('#log').textContent).not.toContain('bí-mật');
+    });
+
+    function cardDownload(name: string): HTMLButtonElement {
+      return [...app.querySelectorAll<HTMLElement>('#chat-panel .file-card')]
+        .find((c) => c.querySelector('.file-name')!.textContent === name)!
+        .querySelector<HTMLButtonElement>('.file-download')!;
+    }
+  });
 });

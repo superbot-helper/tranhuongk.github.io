@@ -107,6 +107,7 @@ export class AudioPlayer {
 
   private async doStart(): Promise<void> {
     const generation = this.generation;
+    requestPlaybackSession();
     const context = createContext();
     // Safari only honours resume() inside the user gesture: request it before any await.
     if (context.state !== 'running') void context.resume().catch(() => undefined);
@@ -134,6 +135,15 @@ export class AudioPlayer {
       if (generation !== this.generation) return; // stop() raced the start: not an error
       throw e;
     }
+  }
+}
+
+/** iPhone Safari 16.4+: the default session type follows the silent switch; 'playback' ignores it. */
+function requestPlaybackSession(): void {
+  try {
+    if ('audioSession' in navigator) (navigator as unknown as { audioSession: { type: string } }).audioSession.type = 'playback';
+  } catch {
+    // Unsupported value or a locked session: audio still plays, just subject to the silent switch.
   }
 }
 

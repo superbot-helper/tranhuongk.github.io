@@ -477,13 +477,46 @@ describe('file transfer cards', () => {
       await expect(sink.write(new Uint8Array(1))).rejects.toThrow();
     });
 
-    test('blob sink copies what it is given', async () => {
+    test('blob sink keeps every byte across incremental consolidation boundaries', async () => {
       const sink = new BlobSink();
-      const chunk = new Uint8Array([1, 2, 3]);
-      await sink.write(chunk);
-      chunk.fill(0);
+      const sizes = [5_000_000, 3_500_000, 2, 8 * 1024 * 1024, 7, 4_000_000, 4_194_304 + 1];
+      const expected: number[] = [];
+      let seed = 1;
+      for (const n of sizes) {
+        const chunk = new Uint8Array(n);
+        for (let i = 0; i < n; i += 997) chunk[i] = seed++ & 0xff;
+        chunk[n - 1] = seed++ & 0xff;
+        await sink.write(chunk);
+        expected.push(n, chunk[0]!, chunk[n - 1]!);
+      }
       await sink.close();
-      expect(await bytesOf(sink.take()!)).toEqual([1, 2, 3]);
+      const blob = sink.take()!;
+      expect(blob.size).toBe(sizes.reduce((a, b) => a + b, 0));
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      let offset = 0;
+      const got: number[] = [];
+      for (const n of sizes) {
+        got.push(n, bytes[offset]!, bytes[offset + n - 1]!);
+        offset += n;
+      }
+      expect(got).toEqual(expected);
+    });
+
+    test('blob sink abort after consolidation drops everything', async () => {
+      const sink = new BlobSink();
+      await sink.write(new Uint8Array(9 * 1024 * 1024)); // beyond the 8 MiB threshold: consolidated
+      await sink.write(new Uint8Array(10));
+      await sink.abort();
+      expect(sink.take()).toBeNull();
+      await expect(sink.write(new Uint8Array(1))).rejects.toThrow();
+    });
+
+    test('blob sink take frees the buffers: a second take is empty-state safe', async () => {
+      const sink = new BlobSink();
+      await sink.write(new Uint8Array([1, 2, 3]));
+      await sink.close();
+      expect(sink.take()!.size).toBe(3);
+      expect(sink.take()!.size).toBe(0);
     });
 
     test('file sink: abort after close and close after abort never throw or corrupt', async () => {

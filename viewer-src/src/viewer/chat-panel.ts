@@ -30,6 +30,8 @@ export interface ChatPanelHandlers {
   typing(typing: boolean): Promise<void>;
   /** Files chosen with the 📎 button or dropped on the panel: offer them to the Windows machine. */
   attach(files: File[]): void;
+  /** "Dán sang Windows": paste this device's clipboard to Windows (called inside the click). */
+  pasteLocal(): void;
   /** Copy a clipboard-history entry to this device (called inside the click). */
   copy(text: string): void;
   /** Open state or unread count changed (toolbar button and badge). */
@@ -110,7 +112,8 @@ export function createChatPanel(root: HTMLElement, h: ChatPanelHandlers): ChatPa
       </div>
     </div>
     <div class="chat-pane chat-pane-clipboard" role="tabpanel" hidden>
-      <p class="clip-empty">Chưa có gì. Bật Clipboard trên thanh công cụ: dán (⌘V / Ctrl+V) trong màn hình điều khiển sẽ gửi văn bản sang Windows; văn bản copy trên Windows sẽ được chép về đây.</p>
+      <button type="button" class="clip-paste" title="Gửi văn bản trong clipboard của thiết bị này sang máy Windows rồi dán (Ctrl+V)">Dán sang Windows</button>
+      <p class="clip-empty">Chưa có gì. Bật Clipboard trên thanh công cụ: dán (⌘V / Ctrl+V) trong màn hình điều khiển, hoặc bấm "Dán sang Windows", sẽ gửi văn bản sang Windows; văn bản copy trên Windows sẽ được chép về đây.</p>
       <ol class="clip-list"></ol>
     </div>`;
 
@@ -126,10 +129,12 @@ export function createChatPanel(root: HTMLElement, h: ChatPanelHandlers): ChatPa
   const chatPane = $<HTMLDivElement>('.chat-pane-chat');
   const clipPane = $<HTMLDivElement>('.chat-pane-clipboard');
   const clipList = $<HTMLOListElement>('.clip-list');
+  const pasteButton = $<HTMLButtonElement>('.clip-paste');
   const clipEmpty = $<HTMLParagraphElement>('.clip-empty');
   const tabs = [...root.querySelectorAll<HTMLButtonElement>('.chat-tab')];
 
   attachButton.disabled = true;
+  pasteButton.disabled = true;
   let open = false;
   let unread = 0;
   let available = false;
@@ -265,6 +270,7 @@ export function createChatPanel(root: HTMLElement, h: ChatPanelHandlers): ChatPa
   });
   sendButton.addEventListener('click', () => sendDraft());
   attachButton.addEventListener('click', () => fileInput.click());
+  pasteButton.addEventListener('click', () => h.pasteLocal());
   fileInput.addEventListener('change', () => {
     const files = [...(fileInput.files ?? [])];
     // Clear the selection so choosing the same file again fires `change`.
@@ -302,6 +308,7 @@ export function createChatPanel(root: HTMLElement, h: ChatPanelHandlers): ChatPa
       input.disabled = !next;
       sendButton.disabled = !next || sending;
       attachButton.disabled = !next;
+      pasteButton.disabled = !next;
       unavailableEl.textContent = next ? '' : (reason ?? '');
       unavailableEl.hidden = next || !reason;
       if (!next) {

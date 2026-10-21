@@ -123,6 +123,15 @@ Ghi chú:
   - `bỏ qua … tin / N từ nguồn lạ` có N tăng dần, hoặc log có dòng `nguồn lạ addr:port`, nghĩa là relay đã đổi nguồn (lệnh 26).
   - Giai đoạn 0 chưa hỗ trợ trường hợp này. Hãy ghi nó lại trong kết quả.
 
+## C2. Ghi chú thử giai đoạn 2 (chat, clipboard, file, âm thanh, chụp/quay)
+
+- **Tốc độ file là bình thường khi chậm.** Mỗi lần chờ ack chỉ có tối đa 2 mảnh × 32.000 byte trên đường bay, nên qua Worker tốc độ khoảng 200–400 KB/s. File 200 MB mất khoảng 8–16 phút. Đó không phải treo: thanh tiến độ vẫn nhích và hiện tốc độ.
+- **Nhận file lớn:** theo dõi bộ nhớ của tab trong Chrome Task Manager (Shift+Esc). Chrome/Edge lưu thẳng ra đĩa (File System Access); Safari/Firefox gom trong bộ nhớ, tối đa 512 MiB, phần quá bị từ chối bằng thông báo rõ.
+- **File nhận xong mà chưa bấm "Tải về"** thì khi ngắt kết nối sẽ có thông báo "Tải về N file đã nhận"; mỗi lần bấm tải một file.
+- **iPhone:** gạt công tắc im lặng sang chế độ im lặng rồi bật "Âm thanh"; âm thanh vẫn phải nghe được (Safari 16.4+; bản cũ hơn bị công tắc tắt tiếng).
+- **Điện thoại không có phím tắt dán:** dùng nút nổi "Dán" hoặc nút "Dán sang Windows" trong Chat → Clipboard (cần bật Clipboard, trình duyệt có thể hỏi quyền "Dán").
+- **Video quay bằng Chrome là MP4 phân mảnh (fragmented):** mở thử bằng QuickTime trên Mac để chắc nó chạy được.
+
 ## D. Gửi lại cho builder
 
 **Được gửi:**

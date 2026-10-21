@@ -30,7 +30,7 @@ import { createCaptureToast, type CaptureToast } from './capture-toast';
 import { createChatPanel } from './chat-panel';
 import { ClipboardSync } from './clipboard-sync';
 import { CursorLayer } from './cursor-layer';
-import { attachDropZone, createFileTransfers, type FileTransferSession } from './file-transfers';
+import { attachDropZone, createFileTransfers, type FileTransferSession, type UnclaimedFile } from './file-transfers';
 import { DesktopInput } from './input';
 import { RecorderError, recorderSupport, ScreenRecorder, type RecorderLike, type RecorderOptions, type RecorderSupport, type Recording } from './recorder';
 import { ScreenView, type Crop, type ScaleMode } from './screen';
@@ -142,6 +142,7 @@ const LAYOUT = `
     <div id="chat-panel"></div>
     <div id="clipboard-toast"></div>
     <div id="capture-toast"></div>
+    <div id="file-toast"></div>
   </section>
   <details id="diagnostics"></details>`;
 
@@ -378,6 +379,7 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
         else input.focusKeyboard();
       },
       specialKeys: () => toolbar.openSpecialKeys(),
+      pasteLocal: () => pasteFromDevice(),
       cancel: () => input.releaseAll(),
       remotePosition: () => cursorLayer.presenter.snapshot.position,
     },
@@ -439,7 +441,11 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
         focusUnlessTouch();
       },
       capture: (kind) => capture(kind),
-      record: () => (recorder ? void stopRecording() : startRecording()),
+      record: () => {
+        if (recorder) void stopRecording();
+        else startRecording();
+        focusUnlessTouch();
+      },
       fullscreen: () => toggleFullscreen(),
       refresh: () => {
         session?.refreshScreen().catch((e: unknown) => log(`Làm mới lỗi: ${describe(e)}`));
@@ -456,6 +462,8 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     log,
   });
   const captureToast: CaptureToast = createCaptureToast($<HTMLDivElement>('capture-toast'));
+  /** Received files nobody downloaded before the session ended (its own toast: a recording offer must not replace it). */
+  const fileToast: CaptureToast = createCaptureToast($<HTMLDivElement>('file-toast'));
   const chatEl = $<HTMLDivElement>('chat-panel');
   /** The desktop panel starts below the toolbar and notices (level with the screen); see index.html. */
   function placeChat(): void {
@@ -466,6 +474,7 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     typing: (typing) => session?.sendTyping(typing) ?? Promise.resolve(),
     attach: (files) => fileTransfers.send(files),
     copy: (text) => clipboardSync.copy(text),
+    pasteLocal: () => pasteFromDevice(),
     changed: (state) => toolbar.setChat(state),
     closed: () => focusUnlessTouch(),
   });
@@ -500,6 +509,47 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     }
     clipboardSync.setEnabled(effective);
     toolbar.setClipboard({ on: clipboardOn, available: toolsAvailable, reason: TOOLS_UNAVAILABLE });
+  }
+
+  /**
+   * "Dán sang Windows" (floating "Dán" button, Clipboard tab): phones have no paste shortcut, so the
+   * device clipboard is read here, inside the click, then uploaded (sharing on) and Ctrl+V is typed.
+   */
+  function pasteFromDevice(): void {
+    const current = session;
+    if (!current || !peer) return;
+    if (!input.isEnabled || !input.supportsKeyboard) {
+      clipboardSync.notice(
+        input.isEnabled ? 'Máy Windows dùng UltraViewer cũ: chưa dán được từ đây.' : 'Bật Điều khiển để dán sang Windows.',
+      );
+      focusUnlessTouch();
+      return;
+    }
+    void clipboardSync.readLocal().then(async (text) => {
+      if (text === null) return;
+      const proceed = await clipboardSync.paste(text);
+      // The upload may have taken a while: only type into the same, still controlled, session.
+      if (proceed && !destroyed && session === current && input.isEnabled) input.sendPasteShortcut();
+      focusUnlessTouch();
+    });
+  }
+
+  /** Session ended: finished incoming files nobody downloaded yet are offered one download per click. */
+  function offerUnclaimedFiles(): void {
+    const files = fileTransfers.unclaimed();
+    if (files.length === 0) return;
+    const offerNext = (rest: UnclaimedFile[]): void => {
+      fileToast.offer(`Có ${rest.length} file đã nhận chưa tải về.`, {
+        label: `Tải về ${rest.length} file đã nhận`,
+        run: () => {
+          const [first, ...others] = rest;
+          first!.download(); // inside the click
+          if (others.length > 0) offerNext(others);
+        },
+        discard: () => rest.forEach((f) => f.release()),
+      });
+    };
+    offerNext(files);
   }
 
   function setTools(available: boolean): void {
@@ -558,7 +608,7 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
   const machineName = () => peer?.displayName || 'UltraViewer';
 
   function capture(kind: CaptureKind): void {
-    if (!peer || !screenView.hasFrame || captureModal) return;
+    if (!peer || !screenView.hasFrame || captureModal) return focusUnlessTouch();
     if (kind === 'full') {
       // Synchronous, inside the menu click: Safari only allows the download within the gesture.
       const url = pngDataUrl(canvas);
@@ -589,9 +639,9 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     if (!support.ok) {
       refreshCapture();
       captureToast.notice(support.reason);
-      return;
+      return focusUnlessTouch();
     }
-    if (!peer || !screenView.hasFrame) return;
+    if (!peer || !screenView.hasFrame) return focusUnlessTouch();
     captureToast.hide(); // a finished video not downloaded yet is dropped
     recordingName = machineName();
     try {
@@ -609,7 +659,7 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     } catch (e) {
       log(`Không bắt đầu được quay: ${e instanceof RecorderError ? e.code : describe(e)}`);
       captureToast.notice('Không bắt đầu được quay video.');
-      return;
+      return focusUnlessTouch();
     }
     recordingSeconds = 0;
     refreshCapture();
@@ -812,6 +862,7 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     chatPanel.reset();
     clipboardSync.reset();
     fileTransfers.reset();
+    offerUnclaimedFiles();
     setTools(false);
     if (clock !== null) clearInterval(clock);
     clock = null;
@@ -864,6 +915,7 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     refreshCapture();
     chatPanel.reset();
     clipboardSync.reset();
+    fileToast.hide(); // releases the received files nobody downloaded
     fileTransfers.clear();
     setTools(false);
     const size = deps.screenSize?.() ?? {
@@ -969,6 +1021,7 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
       recorder = null;
       captureModal?.close();
       captureToast.dispose();
+      fileToast.dispose();
       touch.detach();
       window.removeEventListener('blur', onWindowBlur);
       dropHeldPosition();

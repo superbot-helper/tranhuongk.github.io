@@ -91,10 +91,19 @@ export class FsSink implements FileSink {
   }
 }
 
-/** Gathers the parts in memory; `take()` yields the finished Blob once. */
+/** Buffered parts beyond this size are folded into one Blob so the browser may spill them to disk. */
+const BLOB_CONSOLIDATE_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Gathers the parts; `take()` yields the finished Blob once. The sink takes ownership of the chunk
+ * (the file engine hands it a private copy). Parts are folded into a Blob every ~8 MiB so a big file
+ * is not held as many JS-heap buffers (phones can crash the tab with ~2x peak otherwise).
+ */
 export class BlobSink implements FileSink {
   private state: 'open' | 'closed' | 'aborted' = 'open';
+  private blob: Blob | null = null;
   private parts: Uint8Array[] = [];
+  private pending = 0;
   private total = 0;
 
   constructor(private readonly limit: number = BLOB_LIMIT_BYTES) {}
@@ -103,7 +112,9 @@ export class BlobSink implements FileSink {
     if (this.state !== 'open') throw new Error('sink is not open');
     if (this.total + chunk.length > this.limit) throw new Error('memory limit');
     this.total += chunk.length;
-    this.parts.push(chunk.slice());
+    this.parts.push(chunk);
+    this.pending += chunk.length;
+    if (this.pending > BLOB_CONSOLIDATE_BYTES) this.consolidate();
   }
 
   async close(): Promise<void> {
@@ -113,17 +124,28 @@ export class BlobSink implements FileSink {
   async abort(): Promise<void> {
     if (this.state !== 'open') return;
     this.state = 'aborted';
+    this.blob = null;
     this.parts = [];
+    this.pending = 0;
     this.total = 0;
   }
 
   /** The complete file, or null when the sink was aborted or is not finished. Frees the buffers. */
   take(): Blob | null {
     if (this.state !== 'closed') return null;
-    const blob = new Blob(this.parts as BlobPart[]);
-    this.parts = [];
+    this.consolidate();
+    const blob = this.blob ?? new Blob([]);
+    this.blob = null;
     this.total = 0;
     return blob;
+  }
+
+  private consolidate(): void {
+    if (this.parts.length === 0) return;
+    const pieces: BlobPart[] = this.blob ? [this.blob, ...(this.parts as BlobPart[])] : (this.parts as BlobPart[]);
+    this.blob = new Blob(pieces);
+    this.parts = [];
+    this.pending = 0;
   }
 }
 
@@ -243,11 +265,23 @@ export interface FileTransfersHost {
   now?: () => number;
 }
 
+/** A received file nobody downloaded yet; `download()` must run inside a user click. */
+export interface UnclaimedFile {
+  name: string;
+  size: number;
+  /** Starts the download and releases the file. */
+  download(): void;
+  /** Drops the file without saving it. */
+  release(): void;
+}
+
 export interface FileTransfers {
   /** Offer files chosen with the picker or dropped; each gets an outgoing card. */
   send(files: readonly File[]): void;
   /** A `file` event of the session. */
   handle(event: FileEvent): void;
+  /** Finished incoming files still waiting for their "Tải về" click (kept in memory). */
+  unclaimed(): UnclaimedFile[];
   /** The session ended: running transfers become "đã huỷ", open save dialogs are discarded. */
   reset(): void;
   /** A new session starts: remove every card. */
@@ -558,6 +592,30 @@ export function createFileTransfers(host: FileTransfersHost): FileTransfers {
           finish(card, 'failed', failureText(event.reason));
           break;
       }
+    },
+
+    unclaimed() {
+      const files: UnclaimedFile[] = [];
+      for (const card of all) {
+        if (!card.incoming || card.state !== 'completed' || card.blob === null) continue;
+        files.push({
+          name: card.name,
+          size: card.size,
+          download() {
+            const blob = card.blob;
+            if (blob === null) return;
+            download(card, blob);
+            card.blob = null;
+            paint(card);
+          },
+          release() {
+            if (card.blob === null) return;
+            card.blob = null;
+            paint(card);
+          },
+        });
+      }
+      return files;
     },
 
     reset() {

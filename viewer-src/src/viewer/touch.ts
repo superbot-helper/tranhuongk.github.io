@@ -44,6 +44,8 @@ export interface TouchHandlers {
   zoomScale?(): number;
   /** The floating "Phím" button. */
   specialKeys?(): void;
+  /** The floating "Dán" button: paste this device's clipboard to Windows (runs inside the click). */
+  pasteLocal?(): void;
   /** Touches ended abnormally (pointercancel): release everything held. */
   cancel?(): void;
   /** Control is active; when false only zoom and pan work. */
@@ -158,10 +160,12 @@ export function attachTouch(
   bar.className = 'touch-buttons';
   bar.innerHTML =
     '<button type="button" data-touch="keyboard" aria-label="Bật/tắt bàn phím ảo" title="Bàn phím ảo">⌨</button>' +
-    '<button type="button" data-touch="keys" aria-label="Phím đặc biệt" title="Phím đặc biệt">Phím</button>';
+    '<button type="button" data-touch="keys" aria-label="Phím đặc biệt" title="Phím đặc biệt">Phím</button>' +
+    '<button type="button" data-touch="paste" aria-label="Dán sang Windows" title="Dán clipboard của thiết bị sang Windows">Dán</button>';
   el.append(bar);
   const keyboardButton = bar.querySelector<HTMLButtonElement>('[data-touch="keyboard"]')!;
   const keysButton = bar.querySelector<HTMLButtonElement>('[data-touch="keys"]')!;
+  const pasteButton = bar.querySelector<HTMLButtonElement>('[data-touch="paste"]')!;
 
   // --- remote pointer ----------------------------------------------------------------------
 
@@ -406,6 +410,7 @@ export function attachTouch(
   const keepFocus = (e: Event) => e.preventDefault();
   const onKeyboard = () => h.showKeyboard();
   const onKeys = () => h.specialKeys?.();
+  const onPaste = () => h.pasteLocal?.();
   const onBarDown = (e: PointerEvent) => {
     if (e.pointerType === 'touch') bar.classList.add('touch-seen');
     e.preventDefault();
@@ -420,6 +425,7 @@ export function attachTouch(
     [bar, 'mousedown', keepFocus],
     [keyboardButton, 'click', onKeyboard],
     [keysButton, 'click', onKeys],
+    [pasteButton, 'click', onPaste],
   ];
   for (const [t, type, fn, opts] of listeners) t.addEventListener(type, fn as EventListener, opts);
 

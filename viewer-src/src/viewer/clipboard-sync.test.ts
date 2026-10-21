@@ -364,4 +364,132 @@ describe('clipboard sync in the viewer page', () => {
     expect(log).not.toContain('mật-khẩu-123');
     expect(log).not.toContain('bí-mật-456');
   });
+
+  describe('"Dán sang Windows" (phones: no paste shortcut)', () => {
+    let readText: ReturnType<typeof vi.fn>;
+    const useReadText = (impl: () => Promise<string>) => {
+      readText = vi.fn(impl);
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText, readText } });
+    };
+    const touchPaste = () => $<HTMLButtonElement>('[data-touch="paste"]');
+    const toastText = () => $('#clipboard-toast .toast-text').textContent;
+    const keyboardOnly = [CTRL_DOWN, V_DOWN, V_UP, CTRL_UP];
+
+    test('the floating Dán button reads the device clipboard inside the click, uploads it, then types Ctrl+V', async () => {
+      useReadText(async () => 'từ điện thoại');
+      connect();
+      clipboardButton().click();
+      touchPaste().click();
+      expect(readText).toHaveBeenCalledTimes(1); // synchronously inside the click
+      await settle();
+      expect(session.sent).toEqual(['clipboard từ điện thoại', ...keyboardOnly]);
+      expect([...app.querySelectorAll('#chat-panel .clip-text')].map((x) => x.textContent)).toEqual(['từ điện thoại']);
+    });
+
+    test('the Clipboard-tab button does the same', async () => {
+      useReadText(async () => 'abc');
+      connect();
+      clipboardButton().click();
+      $<HTMLButtonElement>('#chat-panel .clip-paste').click();
+      await settle();
+      expect(session.sent).toEqual(['clipboard abc', ...keyboardOnly]);
+    });
+
+    test('the same text again is not uploaded twice (echo rule) but Ctrl+V is still typed', async () => {
+      useReadText(async () => 'abc');
+      connect();
+      clipboardButton().click();
+      touchPaste().click();
+      await settle();
+      touchPaste().click();
+      await settle();
+      expect(session.sent).toEqual(['clipboard abc', ...keyboardOnly, ...keyboardOnly]);
+    });
+
+    test('text that just came from Windows is not bounced back', async () => {
+      useReadText(async () => 'từ windows');
+      connect();
+      clipboardButton().click();
+      session.emit({ type: 'clipboard', text: 'từ windows' });
+      touchPaste().click();
+      await settle();
+      expect(session.sent).toEqual(keyboardOnly);
+    });
+
+    test('with Clipboard sharing off: a toast asks to turn it on, nothing is read or sent', async () => {
+      useReadText(async () => 'abc');
+      connect();
+      touchPaste().click();
+      await settle();
+      expect(readText).not.toHaveBeenCalled();
+      expect(session.sent).toEqual([]);
+      expect($<HTMLElement>('#clipboard-toast').hidden).toBe(false);
+      expect(toastText()).toContain('Bật Clipboard');
+    });
+
+    test('readText rejected: Vietnamese toast explaining the block, nothing sent', async () => {
+      useReadText(() => Promise.reject(new DOMException('denied', 'NotAllowedError')));
+      connect();
+      clipboardButton().click();
+      touchPaste().click();
+      await settle();
+      expect(session.sent).toEqual([]);
+      expect(toastText()).toContain('Trình duyệt không cho đọc clipboard');
+      expect($('#log').textContent).toContain('Đọc clipboard bị trình duyệt từ chối');
+    });
+
+    test('no Clipboard API at all behaves like a refusal', async () => {
+      delete (navigator as unknown as Record<string, unknown>).clipboard;
+      connect();
+      clipboardButton().click();
+      touchPaste().click();
+      await settle();
+      expect(session.sent).toEqual([]);
+      expect(toastText()).toContain('Trình duyệt không cho đọc clipboard');
+    });
+
+    test('an empty device clipboard pastes nothing', async () => {
+      useReadText(async () => '');
+      connect();
+      clipboardButton().click();
+      touchPaste().click();
+      await settle();
+      expect(session.sent).toEqual([]);
+      expect(toastText()).toContain('trống');
+    });
+
+    test('with Điều khiển off nothing is read; a toast says to turn it on', async () => {
+      useReadText(async () => 'abc');
+      connect();
+      clipboardButton().click();
+      $<HTMLButtonElement>('#control-toggle').click(); // local control off
+      touchPaste().click();
+      await settle();
+      expect(readText).not.toHaveBeenCalled();
+      expect(session.sent).toEqual([]);
+      expect(toastText()).toContain('Bật Điều khiển');
+    });
+
+    test('a session that ended during the read gets no Ctrl+V', async () => {
+      let resolve!: (t: string) => void;
+      useReadText(() => new Promise<string>((r) => (resolve = r)));
+      connect();
+      clipboardButton().click();
+      touchPaste().click();
+      const before = session.sent.length;
+      session.close();
+      resolve('abc');
+      await settle();
+      expect(session.sent.slice(before)).toEqual([]);
+    });
+
+    test('the text never reaches the diagnostics log', async () => {
+      useReadText(async () => 'mật-khẩu-riêng-789');
+      connect();
+      clipboardButton().click();
+      touchPaste().click();
+      await settle();
+      expect($('#log').textContent).not.toContain('mật-khẩu-riêng-789');
+    });
+  });
 });

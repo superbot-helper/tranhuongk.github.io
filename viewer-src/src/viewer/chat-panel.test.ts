@@ -22,6 +22,7 @@ describe('chat panel', () => {
   let typing: boolean[];
   let changes: Array<{ open: boolean; unread: number }>;
   let closed: number;
+  let pasted: number;
   let failSend: Error | null;
 
   const $ = <T extends HTMLElement>(sel: string) => root.querySelector<T>(sel)!;
@@ -45,6 +46,7 @@ describe('chat panel', () => {
     typing = [];
     changes = [];
     closed = 0;
+    pasted = 0;
     failSend = null;
     const handlers: ChatPanelHandlers = {
       send: async (text) => {
@@ -56,6 +58,7 @@ describe('chat panel', () => {
       },
       attach: () => {},
       copy: () => {},
+      pasteLocal: () => pasted++,
       changed: (s) => changes.push(s),
       closed: () => closed++,
     };
@@ -200,13 +203,25 @@ describe('chat panel', () => {
     expect(closed).toBe(2);
   });
 
+  test('the Clipboard tab has a "Dán sang Windows" button: disabled while tools are unavailable, calls pasteLocal on click', () => {
+    const button = $<HTMLButtonElement>('.clip-paste');
+    expect(button.textContent).toBe('Dán sang Windows');
+    expect(button.disabled).toBe(false); // setAvailable(true) in beforeEach
+    button.click();
+    expect(pasted).toBe(1);
+    panel.setAvailable(false, 'x');
+    expect(button.disabled).toBe(true);
+    panel.setAvailable(true);
+    expect(button.disabled).toBe(false);
+  });
+
   test('the Clipboard tab lists history entries with a copy button', () => {
     const copied: string[] = [];
     panel.dispose();
     root.innerHTML = '';
     panel = createChatPanel(root, {
       send: async () => {}, typing: async () => {}, changed: () => {}, closed: () => {}, attach: () => {},
-      copy: (t) => copied.push(t),
+      copy: (t) => copied.push(t), pasteLocal: () => {},
     });
     panel.setClipboardHistory([
       { text: 'mới', outgoing: false, at: new Date() },

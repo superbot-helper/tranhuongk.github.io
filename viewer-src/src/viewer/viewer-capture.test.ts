@@ -313,4 +313,70 @@ describe('screenshots, annotation and recording in the viewer page', () => {
     expect(menuItem('Lưu toàn màn hình (PNG)').disabled).toBe(true);
     expect(item('#record-toggle').disabled).toBe(true);
   });
+
+  describe('the keyboard goes back to the remote screen', () => {
+    const textarea = () => $<HTMLTextAreaElement>('#keyboard-input');
+    /** Clicks a menu item that had the focus, as a keyboard or touch user would. */
+    const press = (item: HTMLButtonElement) => {
+      item.focus();
+      expect(document.activeElement).toBe(item);
+      item.click();
+    };
+
+    test('after Dừng quay', async () => {
+      connect();
+      frame();
+      menuItem('Quay màn hình').click();
+      press(menuItem('Dừng quay (0:00)'));
+      expect(document.activeElement).toBe(textarea());
+      await settle();
+    });
+
+    test('when the browser cannot record', () => {
+      support = { ok: false, reason: UNSUPPORTED_REASON };
+      connect();
+      frame();
+      const button = $<HTMLButtonElement>('#record-toggle');
+      button.disabled = false; // a click that still reaches the handler
+      press(button);
+      expect(document.activeElement).toBe(textarea());
+    });
+
+    test('when the recorder cannot start', () => {
+      startError = new RecorderError('failed');
+      connect();
+      frame();
+      press(menuItem('Quay màn hình'));
+      expect(document.activeElement).toBe(textarea());
+    });
+
+    test('when a screenshot is requested while one is already open or no frame exists yet', () => {
+      connect();
+      const full = menuItem('Lưu toàn màn hình (PNG)');
+      full.disabled = false; // no frame yet: the handler returns early
+      press(full);
+      expect(document.activeElement).toBe(textarea());
+    });
+  });
+
+  test('a recording offer and the received-files offer live in separate toasts: neither replaces the other', async () => {
+    connect();
+    session.emit({ type: 'tools', available: true });
+    frame();
+    session.emit({ type: 'file', event: { type: 'incoming', id: 'r1', name: 'a.txt', size: 1 } });
+    app.querySelector<HTMLButtonElement>('#chat-panel .file-save')!.click();
+    await settle();
+    const sink = session.accepted.get('r1')!;
+    await sink.write(new Uint8Array([1]));
+    await sink.close();
+    session.emit({ type: 'file', event: { type: 'completed', id: 'r1' } });
+    menuItem('Quay màn hình').click();
+    session.emit({ type: 'closed', reason: null });
+    await settle();
+    expect($<HTMLElement>('#capture-toast').hidden).toBe(false);
+    expect($<HTMLElement>('#file-toast').hidden).toBe(false);
+    $<HTMLElement>('#file-toast').querySelector<HTMLButtonElement>('.toast-action')!.click();
+    expect(downloads.map((d) => d.name)).toEqual(['a.txt']);
+    expect($<HTMLElement>('#capture-toast').hidden).toBe(false);
+  });
 });
