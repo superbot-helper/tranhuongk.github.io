@@ -360,6 +360,8 @@ export class RelaySession {
   /** Swift remoteViewOnly: the last command 49 flag (any phase); reset per connection. */
   private remoteViewOnly = false;
   private monitorErrorLogged = false;
+  /** Screen refreshes caused by undecodable frames since the last good frame (manual refreshes are not counted). */
+  private decodeErrorRefreshes = 0;
   private readonly ignoredIDs = new Set<number>();
   private readonly foreignSources = new Set<string>();
   private diag: SessionDiagnostics = freshDiagnostics();
@@ -820,7 +822,9 @@ export class RelaySession {
     const started = this.deps.now();
     try {
       const bitmap = await renderer.apply(decodeFrameMessage(parts));
-      if (!this.live(gen)) return;
+      // A refresh (manual or automatic) while this frame was decoding replaced the renderer and
+      // restarted the login: the frame belongs to a dead screen, and "18" would be sent mid-login.
+      if (!this.live(gen) || this.renderer !== renderer || this.state !== 'active') return;
       const elapsed = this.deps.now() - started;
       this.diag.decodeMsTotal += elapsed;
       this.diag.decodeMsMax = Math.max(this.diag.decodeMsMax, elapsed);
@@ -828,17 +832,22 @@ export class RelaySession {
       if (this.diag.decodedFrames === 1) {
         this.status(`frame đầu tiên: ${bitmap.width}×${bitmap.height}, giải mã ${elapsed.toFixed(1)} ms, ${payloadBytes} byte`);
       }
+      this.decodeErrorRefreshes = 0;
       this.on({ type: 'frame', bitmap });
       // Backpressure follows successful decoding, so a slow client cannot acknowledge a
       // growing queue of stale screen updates.
       this.sendToPeer(ASCII.encode('18'));
     } catch (e) {
+      if (this.live(gen) && (this.renderer !== renderer || this.state !== 'active')) return; // stale decode, see above
       if (!(e instanceof ModernScreenMessageError) || !this.live(gen)) throw e;
       this.diag.lastScreenFailure = e.message;
       this.status(`Frame lỗi: ${e.message}`);
       this.sendToPeer(ASCII.encode('18'));
       // Never continue a damaged tile cache: a full initialization resets decoder and cache.
-      if (this.diag.screenRefreshes >= 2) throw new Failure('protocol', `màn hình lỗi lặp lại: ${e.message}`);
+      // Only decode-error refreshes count (manual "Làm mới" does not); a refresh that recovers
+      // (init + one good frame) resets the budget, a refresh loop of bad frames still ends the session.
+      if (this.decodeErrorRefreshes >= 2) throw new Failure('protocol', `màn hình lỗi lặp lại: ${e.message}`);
+      this.decodeErrorRefreshes++;
       this.renegotiateScreen(gen);
     }
   }

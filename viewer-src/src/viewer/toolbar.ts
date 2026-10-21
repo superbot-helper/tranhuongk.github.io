@@ -85,6 +85,13 @@ export function createToolbar(root: HTMLElement, h: ToolbarHandlers, o: { fullsc
   fullscreen.disabled = !o.fullscreenSupported;
   if (!o.fullscreenSupported) fullscreen.title = 'Trình duyệt này không hỗ trợ toàn màn hình cho trang.';
 
+  // Buttons never take focus from the keyboard textarea (focus on a button makes Space/Enter
+  // re-trigger it while the user types to the remote machine). Selects and the checkbox must keep
+  // their native mousedown (opening the list); their change handlers return focus instead.
+  root.addEventListener('mousedown', (e) => {
+    if ((e.target as Element | null)?.closest('button')) e.preventDefault();
+  });
+
   control.addEventListener('click', () => h.control(control.getAttribute('aria-pressed') !== 'true'));
   monitor.addEventListener('change', () => h.monitor(Number(monitor.value)));
   scale.addEventListener('change', () => h.scale(scale.value as ScaleMode));

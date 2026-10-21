@@ -41,6 +41,8 @@ export interface ViewerDeps {
   workerUrl: string;
   /** Frame draw tick; defaults to requestAnimationFrame. */
   schedule?: (cb: () => void) => void;
+  /** Why this page cannot connect at all (insecure context: no crypto.subtle); shown at load, connecting is refused. */
+  insecureNotice?: string | null;
   /** Local screen size in device pixels (login fields 3/4). */
   screenSize?: () => { width: number; height: number };
 }
@@ -73,6 +75,7 @@ const LAYOUT = `
       <button id="forget" type="button" class="secondary">Quên thiết bị này</button>
     </form>
     <p id="status" role="status">Chưa kết nối</p>
+    <p id="env-notice" role="alert" hidden></p>
   </header>
   <section id="stage">
     <div id="toolbar" hidden></div>
@@ -104,6 +107,7 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
   const stage = $<HTMLElement>('stage');
   const toolbarEl = $<HTMLDivElement>('toolbar');
   const noticeEl = $<HTMLParagraphElement>('notice');
+  const envNotice = $<HTMLParagraphElement>('env-notice');
   const viewport = $<HTMLDivElement>('viewport');
   const canvas = $<HTMLCanvasElement>('screen');
   const textarea = $<HTMLTextAreaElement>('keyboard-input');
@@ -118,6 +122,13 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
   const stored = loadToken();
   tokenInput.value = stored.token;
   remember.checked = stored.remembered || readStorage(() => localStorage, IDENTITY_STORAGE_KEY) !== null;
+  const blocked = deps.insecureNotice ?? null;
+  if (blocked) {
+    envNotice.textContent = blocked;
+    envNotice.hidden = false;
+    connectButton.disabled = true;
+    log(blocked);
+  }
   log(`Trang sẵn sàng. Worker: ${deps.workerUrl || '(chưa cấu hình — nhập trong Diagnostics)'}`);
 
   /** saveIdentity/saveToken throw on blocked storage: keep everything in memory for this tab. */
@@ -240,7 +251,7 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     cursorLayer.setPosition(p.x, p.y);
   };
 
-  const detachTouch = attachTouch(
+  const touch = attachTouch(
     viewport,
     {
       enabled: () => input.isEnabled && input.started,
@@ -280,14 +291,26 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
         refreshControl();
         if (on) focusUnlessTouch();
       },
-      monitor: (index) => selectMonitor(index),
+      // Every handler hands the keyboard back to the textarea: a focused select/button/checkbox
+      // would otherwise react to the keys meant for the remote machine (Space, Enter, letters).
+      monitor: (index) => {
+        selectMonitor(index);
+        focusUnlessTouch();
+      },
       scale: (mode: ScaleMode) => {
         zoom.reset();
         screenView.setScale(mode);
         syncCursorView();
+        focusUnlessTouch();
       },
-      quality: (preset: QualityPreset) => command({ type: 'quality', preset }, false),
-      wallpaper: (hidden) => command({ type: 'wallpaper', visible: !hidden }, true),
+      quality: (preset: QualityPreset) => {
+        command({ type: 'quality', preset }, false);
+        focusUnlessTouch();
+      },
+      wallpaper: (hidden) => {
+        command({ type: 'wallpaper', visible: !hidden }, true);
+        focusUnlessTouch();
+      },
       special: (key: SpecialKey) => {
         if (key === 'ctrlAltDel') command({ type: 'action', action: 'ctrlAltDel' }, true);
         else input.sendSynthetic(key);
@@ -296,6 +319,7 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
       fullscreen: () => toggleFullscreen(),
       refresh: () => {
         session?.refreshScreen().catch((e: unknown) => log(`Làm mới lỗi: ${describe(e)}`));
+        focusUnlessTouch();
       },
       disconnect: () => void disconnect(),
     },
@@ -426,6 +450,7 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
 
   function onClosed(reason: keyof typeof REASONS | null): void {
     input.stop();
+    touch.reset();
     draw.clear();
     screenView.forget();
     zoom.reset();
@@ -461,6 +486,10 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
 
   form.addEventListener('submit', (event) => {
     event.preventDefault();
+    if (blocked) {
+      setStatus(blocked);
+      return log(blocked);
+    }
     const fields = {
       workerUrl: diag.workerUrl(),
       token: tokenInput.value.trim(),
@@ -538,7 +567,14 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     log('Đã xoá danh tính và token đã lưu trên thiết bị này; lần kết nối sau dùng danh tính mới.');
   });
 
-  const onVisibility = () => log(`Tab ${document.visibilityState === 'hidden' ? 'bị ẩn' : 'hiện lại'} (pha ${session?.phase ?? 'closed'})`);
+  // No pointerup/pointercancel arrives when the page is backgrounded mid-touch: forget the fingers
+  // (DesktopInput releases what was held on blur/hidden by itself).
+  const onWindowBlur = () => touch.reset();
+  window.addEventListener('blur', onWindowBlur);
+  const onVisibility = () => {
+    if (document.visibilityState === 'hidden') touch.reset();
+    log(`Tab ${document.visibilityState === 'hidden' ? 'bị ẩn' : 'hiện lại'} (pha ${session?.phase ?? 'closed'})`);
+  };
   const onPageHide = (e: PageTransitionEvent) => log(`pagehide (persisted: ${e.persisted}, pha ${session?.phase ?? 'closed'})`);
   document.addEventListener('visibilitychange', onVisibility);
   window.addEventListener('pagehide', onPageHide);
@@ -547,7 +583,8 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
 
   return {
     destroy() {
-      detachTouch();
+      touch.detach();
+      window.removeEventListener('blur', onWindowBlur);
       dropHeldPosition();
       document.removeEventListener('pointerdown', onAnyPointerDown, true);
       input.detach();

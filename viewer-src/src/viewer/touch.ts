@@ -56,6 +56,17 @@ export interface TouchOptions {
   now?: () => number;
 }
 
+export interface TouchHandle {
+  /** Remove the listeners and the floating buttons. */
+  detach(): void;
+  /**
+   * Forget every finger, the gesture in progress and a waiting tap click, sending nothing (for an
+   * abnormal end - page hidden, window blurred, session closed - where no pointerup/pointercancel
+   * will come; releasing held buttons is the caller's job: DesktopInput.releaseAll).
+   */
+  reset(): void;
+}
+
 export const TAP_MS = 200;
 export const TAP_SLOP_PX = 10;
 export const DOUBLE_TAP_MS = 250;
@@ -133,7 +144,7 @@ export function attachTouch(
   h: TouchHandlers,
   getView: () => View,
   o: TouchOptions = {},
-): () => void {
+): TouchHandle {
   const now = o.now ?? (() => performance.now());
   const fingers = new Map<number, Finger>();
   let gesture: Gesture | null = null;
@@ -412,12 +423,19 @@ export function attachTouch(
   ];
   for (const [t, type, fn, opts] of listeners) t.addEventListener(type, fn as EventListener, opts);
 
-  return () => {
-    for (const [t, type, fn, opts] of listeners) t.removeEventListener(type, fn as EventListener, opts);
+  const reset = () => {
     takePendingClick();
     fingers.clear();
     gesture = null;
-    bar.remove();
+  };
+
+  return {
+    reset,
+    detach() {
+      for (const [t, type, fn, opts] of listeners) t.removeEventListener(type, fn as EventListener, opts);
+      reset();
+      bar.remove();
+    },
   };
 }
 

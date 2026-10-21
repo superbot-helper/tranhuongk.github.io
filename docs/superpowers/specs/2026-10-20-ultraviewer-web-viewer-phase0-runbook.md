@@ -56,6 +56,22 @@ Các dòng log mong đợi, theo thứ tự:
 7. `init W×H …`
 8. `frame đầu tiên …`
 
+## A2. Thử trên điện thoại
+
+Trang chỉ kết nối được trong **secure context** (HTTPS hoặc `localhost`): kiểm tra SHA-256 của từ điển màn hình dùng `crypto.subtle`, mà trình duyệt chỉ bật ở secure context. Mở `http://<IP-LAN>:5173` trên điện thoại sẽ không có `crypto.subtle`; trang hiện thông báo `Trang cần chạy qua HTTPS hoặc localhost …` và từ chối kết nối (không hạ kiểm tra SHA-256). Địa chỉ Worker `ws://127.0.0.1:8787` cũng sẽ trỏ vào chính điện thoại. Hai cách dùng được:
+
+1. **Android + cáp USB (Chrome, bật USB debugging):** chuyển cổng của điện thoại về Mac, rồi mở `http://localhost:5173/viewer/` trên điện thoại (localhost là secure context):
+
+   ```sh
+   adb reverse tcp:5173 tcp:5173
+   adb reverse tcp:8787 tcp:8787
+   ```
+
+   Giữ Terminal 1 và 2 của mục A đang chạy; Worker URL mặc định `ws://127.0.0.1:8787` giờ trỏ về Mac qua `adb reverse`.
+2. **Bản đã deploy:** mở `https://tranhuongk.github.io/viewer/` (xem mục B) và dán URL `wss://uv-web-viewer-pipe.<subdomain>.workers.dev` vào ô Worker URL trong **Diagnostics** nếu `PROD_WORKER_URL` chưa được điền.
+
+iPhone/iPad không có `adb reverse`: dùng cách 2.
+
 ## B. Deploy (chủ repo, cần trình duyệt)
 
 ```sh

@@ -8,6 +8,8 @@ import { decodeEnvelope, encodeEnvelope, encodeSystem, keepaliveCommandEnvelope,
 import { encodeFrame, FrameDecoder } from '../proto/frame';
 import { decodeMultipart, encodeMultipart } from '../proto/multipart';
 import { cursorShapeRequest } from '../proto/cursor';
+import { ModernScreenRenderer } from '../proto/screen-renderer';
+import { ModernScreenMessageError } from '../proto/screen-message';
 import { rawScreenZstd, screenLong, screenParts, screenWords } from '../proto/screen-test-utils';
 import { concat, enc, u8 } from '../proto/test-utils';
 import type { ClientIdentity } from './identity';
@@ -908,5 +910,90 @@ describe('RelaySession control', () => {
     const peer = bad.events.find((e) => e.type === 'accepted');
     expect(peer?.type === 'accepted' && peer.peer).toMatchObject({ supportsBinaryKeyboard: true, monitors: [] });
     expect(bad.statuses().filter((s) => s.startsWith('monitor'))).toHaveLength(1);
+  });
+
+  describe('screen refresh limits and stale decodes (phase 1 final review)', () => {
+    afterEach(() => vi.restoreAllMocks());
+    const malformed = () => encodeMultipart(firstFrame(5)); // wrong sequence number
+    const loginsOf = (w: World) => w.peerTexts.filter((t) => t.startsWith('login:'));
+
+    test('manual refreshes never count toward the decode-error limit', async () => {
+      const w = new World();
+      w.connect();
+      await waitFor(() => w.session.diagnostics.decodedFrames === 1);
+      for (const n of [2, 3]) {
+        await w.session.refreshScreen();
+        await waitFor(() => w.session.phase === 'active' && w.session.diagnostics.decodedFrames === n);
+      }
+      w.peer!.deliver(fromPartner(malformed()));
+      await waitFor(() => loginsOf(w).length === 4);
+      await waitFor(() => w.session.phase === 'active' && w.session.diagnostics.decodedFrames === 4);
+      expect(w.closedEvent()).toBeUndefined();
+      w.session.close();
+    });
+
+    test('decode-error refreshes that each recover (init + a good frame) reset the limit', async () => {
+      const w = new World();
+      w.connect();
+      await waitFor(() => w.session.diagnostics.decodedFrames === 1);
+      for (const n of [2, 3, 4]) {
+        w.peer!.deliver(fromPartner(malformed()));
+        await waitFor(() => w.session.phase === 'active' && w.session.diagnostics.decodedFrames === n);
+      }
+      expect(loginsOf(w)).toHaveLength(4);
+      expect(w.closedEvent()).toBeUndefined();
+      w.session.close();
+    });
+
+    test('malformed frames right after every init still close the session (refresh-loop protection)', async () => {
+      const w = new World({ sendFrameAfter17: false });
+      w.connect();
+      await waitFor(() => w.session.phase === 'active' && w.peerTexts.includes('28|||1'));
+      for (const n of [2, 3]) {
+        w.peer!.deliver(fromPartner(malformed()));
+        await waitFor(() => w.session.phase === 'active' && w.peerTexts.filter((t) => t === '17').length === n);
+      }
+      w.peer!.deliver(fromPartner(malformed()));
+      await waitFor(() => w.closedEvent());
+      expect(w.events.at(-1)).toEqual({ type: 'closed', reason: 'protocol' });
+    });
+
+    test('a frame still decoding when the screen is refreshed emits no frame event and no "18"', async () => {
+      const w = await activeWorld();
+      let release: (b: { width: number; height: number; rgba: Uint8ClampedArray }) => void = () => {};
+      const apply = vi.spyOn(ModernScreenRenderer.prototype, 'apply').mockImplementationOnce(
+        () => new Promise((resolve) => (release = resolve as typeof release)),
+      );
+      w.peer!.deliver(fromPartner(encodeMultipart(firstFrame())));
+      await waitFor(() => apply.mock.calls.length === 1);
+      await w.session.refreshScreen(); // manual refresh while the frame is decoding
+      expect(w.session.phase).toBe('login');
+      release({ width: 2, height: 1, rgba: new Uint8ClampedArray(8) });
+      await waitFor(() => w.session.phase === 'active' && w.peerTexts.filter((t) => t === '17').length === 2);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(w.events.some((e) => e.type === 'frame')).toBe(false);
+      expect(w.peerTexts.filter((t) => t === '18')).toHaveLength(0);
+      expect(w.session.diagnostics.decodedFrames).toBe(0);
+      expect(w.closedEvent()).toBeUndefined();
+      w.session.close();
+    });
+
+    test('a stale frame that fails to decode after a refresh does not trigger another refresh', async () => {
+      const w = await activeWorld();
+      let fail: (e: unknown) => void = () => {};
+      const apply = vi.spyOn(ModernScreenRenderer.prototype, 'apply').mockImplementationOnce(
+        () => new Promise((_, reject) => (fail = reject)),
+      );
+      w.peer!.deliver(fromPartner(encodeMultipart(firstFrame())));
+      await waitFor(() => apply.mock.calls.length === 1);
+      await w.session.refreshScreen();
+      fail(new ModernScreenMessageError('sequenceMismatch', { expected: 1, received: 2 }));
+      await waitFor(() => w.session.phase === 'active' && w.peerTexts.filter((t) => t === '17').length === 2);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(loginsOf(w)).toHaveLength(2);
+      expect(w.peerTexts.filter((t) => t === '18')).toHaveLength(0);
+      expect(w.closedEvent()).toBeUndefined();
+      w.session.close();
+    });
   });
 });

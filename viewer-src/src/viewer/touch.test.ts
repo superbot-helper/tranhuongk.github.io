@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import type { View } from '../input/geometry';
-import { acceleration, attachTouch, ViewZoom, type TouchHandlers } from './touch';
+import { acceleration, attachTouch, ViewZoom, type TouchHandle, type TouchHandlers } from './touch';
 
 type Call = [string, ...unknown[]];
 
@@ -25,6 +25,7 @@ describe('touch trackpad mode', () => {
   let zoomScale: number;
   let enabled: boolean;
   let host: { x: number; y: number } | null;
+  let touchHandle: TouchHandle;
   let detach: () => void;
 
   const handlers = (): TouchHandlers => ({
@@ -71,12 +72,50 @@ describe('touch trackpad mode', () => {
     zoomScale = 1;
     enabled = true;
     host = null;
-    detach = attachTouch(el, handlers(), () => current, { now: () => Date.now() });
+    touchHandle = attachTouch(el, handlers(), () => current, { now: () => Date.now() });
+    detach = () => touchHandle.detach();
   });
 
   afterEach(() => {
     detach();
     vi.useRealTimers();
+  });
+
+  describe('reset (abnormal ends: page hidden, window blurred, session closed)', () => {
+    test('a finger that never lifted does not make the next single touch a second finger', () => {
+      touch('pointerdown', 1, 100, 100); // backgrounded here: no pointerup / pointercancel
+      touchHandle.reset();
+      touch('pointerdown', 2, 100, 100);
+      vi.advanceTimersByTime(80);
+      touch('pointerup', 2, 100, 100);
+      vi.advanceTimersByTime(300);
+      expect(sent()).toEqual([
+        ['down', 0, 960, 540],
+        ['up', 0, 960, 540],
+      ]);
+    });
+
+    const tap = (id: number) => {
+      touch('pointerdown', id, 100, 100);
+      touch('pointerup', id, 100, 100);
+    };
+
+    test('drops a waiting tap click and a drag in progress, and sends nothing itself', () => {
+      tap(1); // click waits for the double-tap window
+      touchHandle.reset();
+      vi.advanceTimersByTime(500);
+      expect(sent()).toEqual([]);
+
+      tap(1);
+      touch('pointerdown', 1, 100, 100);
+      for (let x = 103; x <= 121; x += 3) touch('pointermove', 1, x, 100);
+      const before = calls.length;
+      touchHandle.reset();
+      expect(calls.length).toBe(before); // no up, no cancel: releaseAll is the caller's job
+      touch('pointermove', 1, 130, 100); // the old finger is forgotten: no further moves
+      touch('pointerup', 1, 130, 100);
+      expect(calls.length).toBe(before);
+    });
   });
 
   test('a quick tap left-clicks at the current remote pointer (after the double-tap window)', () => {

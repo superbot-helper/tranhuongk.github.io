@@ -785,4 +785,111 @@ describe('desktop viewer page', () => {
       expect(wrapper.style.transform).toBe('');
     });
   });
+  describe('phase 1 final review fixes', () => {
+    const MONITORS: RemoteMonitor[] = [
+      { index: 1, left: 0, top: 0, right: 960, bottom: 1080 },
+      { index: 2, left: 960, top: 0, right: 1920, bottom: 1080 },
+    ];
+    const change = (el: HTMLElement) => el.dispatchEvent(new Event('change', { bubbles: true }));
+
+    test('after every toolbar action the keyboard textarea has focus again (non-touch)', () => {
+      connect(peer({ monitors: MONITORS }));
+      const actions: Array<[string, () => void, HTMLElement]> = [
+        ['monitor', () => { const s = $<HTMLSelectElement>('#monitor'); s.value = '2'; change(s); }, $('#monitor')],
+        ['scale', () => { const s = $<HTMLSelectElement>('#scale'); s.value = 'actual'; change(s); }, $('#scale')],
+        ['quality', () => { const s = $<HTMLSelectElement>('#quality'); s.value = 'speed'; change(s); }, $('#quality')],
+        ['wallpaper', () => { const c = $<HTMLInputElement>('#wallpaper'); c.checked = true; change(c); }, $('#wallpaper')],
+        ['refresh', () => $<HTMLButtonElement>('#refresh').click(), $('#refresh')],
+      ];
+      for (const [name, act, control] of actions) {
+        control.focus();
+        expect(document.activeElement, `${name}: control focused before`).toBe(control);
+        act();
+        expect(document.activeElement, `${name}: textarea focused after`).toBe(textarea);
+      }
+    });
+
+    test('after a touch the toolbar actions do not pop the soft keyboard up', () => {
+      connect();
+      pointer('pointerdown', 10, 10, { pointerType: 'touch' });
+      pointer('pointerup', 10, 10, { pointerType: 'touch', buttons: 0 });
+      $<HTMLButtonElement>('#refresh').click();
+      expect(document.activeElement).not.toBe(textarea);
+    });
+
+    test('toolbar buttons do not take focus on mousedown (so Space/Enter never re-trigger them)', () => {
+      connect();
+      for (const id of ['#refresh', '#control-toggle', '#fullscreen', '[data-special="win"]']) {
+        const down = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+        $(id).dispatchEvent(down);
+        expect(down.defaultPrevented, id).toBe(true);
+      }
+      // A select must still open on mousedown.
+      const select = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+      $('#quality').dispatchEvent(select);
+      expect(select.defaultPrevented).toBe(false);
+    });
+
+    const touchTap = async () => {
+      pointer('pointerdown', 480, 270, { pointerType: 'touch', pointerId: 5 });
+      pointer('pointerup', 480, 270, { pointerType: 'touch', pointerId: 5, buttons: 0 });
+      await new Promise<void>((r) => setTimeout(r, 300));
+      await settle();
+    };
+    const clicks = () => session.sent.filter((m) => typeof m === 'string' && m.startsWith('8|||513'));
+
+    test('window blur mid-touch forgets the finger: the next single tap still clicks', async () => {
+      connect();
+      pointer('pointerdown', 100, 100, { pointerType: 'touch', pointerId: 4 }); // never lifted
+      window.dispatchEvent(new Event('blur'));
+      await touchTap();
+      expect(clicks()).toHaveLength(1);
+    });
+
+    test('the page hidden mid-touch forgets the finger', async () => {
+      connect();
+      pointer('pointerdown', 100, 100, { pointerType: 'touch', pointerId: 4 });
+      vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+      document.dispatchEvent(new Event('visibilitychange'));
+      vi.restoreAllMocks();
+      vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+      await touchTap();
+      expect(clicks()).toHaveLength(1);
+    });
+
+    test('a session that closed mid-touch does not leave a stale finger for the next session', async () => {
+      connect();
+      pointer('pointerdown', 100, 100, { pointerType: 'touch', pointerId: 4 });
+      session.emit({ type: 'closed', reason: 'partnerEnded' });
+      connect();
+      await touchTap();
+      expect(clicks()).toHaveLength(1);
+    });
+
+    test('the page refuses to connect in an insecure context and says why', () => {
+      viewer.destroy();
+      const sessions: number[] = [];
+      viewer = mountViewer(app, {
+        createSession: () => { sessions.push(1); return session; },
+        workerUrl: 'ws://127.0.0.1:8787',
+        insecureNotice: 'NOTICE-VN',
+        schedule: (cb) => cb(),
+      });
+      const notice = $('#env-notice');
+      expect(notice.hidden).toBe(false);
+      expect(notice.textContent).toBe('NOTICE-VN');
+      expect($<HTMLButtonElement>('#connect').disabled).toBe(true);
+      $<HTMLInputElement>('#token').value = 'x'.repeat(32);
+      $<HTMLInputElement>('#partner').value = '123456789';
+      $<HTMLInputElement>('#password').value = 'abc';
+      $<HTMLFormElement>('#connect-form').dispatchEvent(new Event('submit', { cancelable: true }));
+      expect(sessions).toEqual([]);
+      expect($('#status').textContent).toBe('NOTICE-VN');
+    });
+
+    test('a secure context shows no environment notice', () => {
+      expect($('#env-notice').hidden).toBe(true);
+      expect($<HTMLButtonElement>('#connect').disabled).toBe(false);
+    });
+  });
 });
