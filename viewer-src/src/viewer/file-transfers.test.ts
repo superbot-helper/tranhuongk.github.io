@@ -286,7 +286,7 @@ describe('file transfer cards', () => {
       expect(status()).toBe('Đã huỷ');
     });
 
-    test('without File System Access the file is gathered in memory and downloaded under its own name', async () => {
+    test('without File System Access the file is gathered in memory and downloaded on click under its own name', async () => {
       offer('r1', 'tài liệu.txt', 5);
       expect(button('file-save').disabled).toBe(false);
       button('file-save').click();
@@ -298,23 +298,35 @@ describe('file transfer cards', () => {
       await sink.close();
       expect(downloads).toEqual([]);
       emit({ type: 'completed', id: 'r1' });
+      // No download without a user gesture: the card offers a button instead.
+      expect(downloads).toEqual([]);
+      expect(urls).toEqual([]);
+      expect(status()).toBe('Xong — bấm Tải về để lưu');
+      expect(shown('file-download')).toBe(true);
+      button('file-download').click();
       expect(downloads).toHaveLength(1);
       expect(downloads[0]!.name).toBe('tài liệu.txt');
       expect(downloads[0]!.href).toBe('blob:fake/1');
       expect(await bytesOf(urls[0]!)).toEqual([1, 2, 3, 4, 5]);
-      expect(status()).toContain('tải về');
+      // The blob is released after the click: the button goes away and cannot download again.
+      expect(status()).toBe('Đã tải về');
+      expect(shown('file-download')).toBe(false);
+      button('file-download').click();
+      expect(downloads).toHaveLength(1);
       expect(revoked).toEqual([]);
       vi.advanceTimersByTime(60_000);
       expect(revoked).toEqual(['blob:fake/1']);
       expect(document.querySelector('a[download]')).toBeNull();
     });
 
-    test('a zero-byte file downloads an empty blob', async () => {
+    test('a zero-byte file downloads an empty blob on click', async () => {
       offer('r1', 'empty.txt', 0);
       button('file-save').click();
       await vi.advanceTimersByTimeAsync(0);
       await session!.accepted.get('r1')!.close();
       emit({ type: 'completed', id: 'r1' });
+      expect(downloads).toEqual([]);
+      button('file-download').click();
       expect(downloads[0]!.name).toBe('empty.txt');
       expect(urls[0]!.size).toBe(0);
     });
@@ -385,11 +397,13 @@ describe('file transfer cards', () => {
       downloads.length = 0;
 
       transfers.reset();
-      expect(cards().map((c) => c.querySelector('.file-status')!.textContent)).toEqual(['Đã huỷ', 'Đã huỷ', 'Đã huỷ', expect.stringContaining('tải về')]);
+      expect(cards().map((c) => c.querySelector('.file-status')!.textContent)).toEqual(['Đã huỷ', 'Đã huỷ', 'Đã huỷ', 'Xong — bấm Tải về để lưu']);
       for (let i = 0; i < 4; i++) {
         expect(shown('file-save', i)).toBe(false);
         expect(shown('file-cancel', i)).toBe(false);
       }
+      // A finished file stays downloadable after the disconnect.
+      expect(shown('file-download', 3)).toBe(true);
       expect(downloads).toEqual([]);
       // The engine aborts the sink too; the blob sink then yields nothing.
       await sink.abort();
@@ -410,7 +424,7 @@ describe('file transfer cards', () => {
       expect(status()).toBe('Đã huỷ');
     });
 
-    test('clear removes the old cards; a pending download URL is revoked on dispose', async () => {
+    test('clear removes the old cards and releases an undownloaded file; a pending download URL is revoked on dispose', async () => {
       offer('r1', 'a.txt', 1);
       button('file-save').click();
       await vi.advanceTimersByTimeAsync(0);
@@ -418,8 +432,23 @@ describe('file transfer cards', () => {
       await sink.write(new Uint8Array([7]));
       await sink.close();
       emit({ type: 'completed', id: 'r1' });
+      const waiting = card();
+      const unclaimed = waiting.querySelector<HTMLButtonElement>('.file-download')!;
       transfers.clear();
       expect(cards()).toHaveLength(0);
+      // Removed with its card: nothing is downloaded any more.
+      unclaimed.click();
+      expect(downloads).toEqual([]);
+      expect(urls).toEqual([]);
+
+      offer('r2', 'b.txt', 1);
+      button('file-save').click();
+      await vi.advanceTimersByTimeAsync(0);
+      const second = session!.accepted.get('r2')!;
+      await second.write(new Uint8Array([7]));
+      await second.close();
+      emit({ type: 'completed', id: 'r2' });
+      button('file-download').click();
       transfers.dispose();
       expect(revoked).toEqual(['blob:fake/1']);
     });

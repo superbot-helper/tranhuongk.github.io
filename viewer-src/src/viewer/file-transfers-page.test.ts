@@ -111,7 +111,7 @@ describe('file transfer in the viewer page', () => {
     expect(cards()[0]!.querySelector('.file-name')!.textContent).toBe('plan.pdf');
   });
 
-  test('save in memory, then the session events complete the card', async () => {
+  test('save in memory, then the download starts on the Tải về click', async () => {
     URL.createObjectURL = () => 'blob:x';
     URL.revokeObjectURL = () => {};
     const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
@@ -124,8 +124,11 @@ describe('file transfer in the viewer page', () => {
     await sink.write(new Uint8Array([1, 2, 3]));
     await sink.close();
     session.emit({ type: 'file', event: { type: 'completed', id: 'r1' } });
+    expect(click).not.toHaveBeenCalled();
+    expect(status()).toBe('Xong — bấm Tải về để lưu');
+    cards()[0]!.querySelector<HTMLButtonElement>('.file-download')!.click();
     expect(click).toHaveBeenCalledTimes(1);
-    expect(status()).toContain('tải về');
+    expect(status()).toBe('Đã tải về');
   });
 
   test('disconnecting turns running cards into "đã huỷ"; a new connection starts with no cards', async () => {

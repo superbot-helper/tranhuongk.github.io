@@ -5,7 +5,8 @@
 //  - Receiving writes through the File System Access API when the browser has it (the sink is a
 //    FileSystemWritableFileStream: bytes are committed only by close(), so a cancelled or
 //    interrupted transfer leaves no partial data). Otherwise the parts are gathered in memory (up
-//    to 512 MiB), then downloaded with <a download>.
+//    to 512 MiB); when complete, the card offers a "Tải về" button and the download (<a download>)
+//    starts inside that click (browsers such as Safari block downloads without a user gesture).
 //  - Progress repaints are throttled to about 4 per second per card.
 // File names are rendered with textContent only and never logged; the cards carry no contents.
 import { FileOfferError } from '../proto/file-offer';
@@ -217,6 +218,8 @@ interface Card {
   /** How a finished incoming file was kept. */
   kept: 'disk' | 'download';
   sink: FileSink | null;
+  /** A finished in-memory file waiting for the "Tải về" click; released once downloaded. */
+  blob: Blob | null;
   bytes: number;
   samples: Sample[];
   lastPaint: number;
@@ -226,6 +229,7 @@ interface Card {
   statusEl: HTMLElement;
   noteEl: HTMLElement;
   saveButton: HTMLButtonElement;
+  downloadButton: HTMLButtonElement;
   cancelButton: HTMLButtonElement;
 }
 
@@ -293,7 +297,7 @@ export function createFileTransfers(host: FileTransfersHost): FileTransfers {
         break;
       }
       case 'completed':
-        text = card.incoming ? (card.kept === 'disk' ? 'Đã lưu xong' : 'Xong, đã tải về') : 'Đã gửi xong';
+        text = card.incoming ? (card.kept === 'disk' ? 'Đã lưu xong' : card.blob !== null ? 'Xong — bấm Tải về để lưu' : 'Đã tải về') : 'Đã gửi xong';
         break;
       case 'canceled':
         text = 'Đã huỷ';
@@ -309,6 +313,7 @@ export function createFileTransfers(host: FileTransfersHost): FileTransfers {
     const waitingForUser = card.incoming && (state === 'offered' || state === 'saving');
     card.saveButton.hidden = !waitingForUser;
     card.saveButton.disabled = state === 'saving' || tooBigForMemory(card);
+    card.downloadButton.hidden = !(state === 'completed' && card.blob !== null);
     card.cancelButton.hidden = isFinal(card) || card.id === '';
   }
 
@@ -365,20 +370,33 @@ export function createFileTransfers(host: FileTransfersHost): FileTransfers {
     saveButton.type = 'button';
     saveButton.className = 'file-save';
     saveButton.textContent = 'Lưu';
+    const downloadButton = document.createElement('button');
+    downloadButton.type = 'button';
+    downloadButton.className = 'file-download';
+    downloadButton.textContent = 'Tải về';
+    downloadButton.hidden = true;
     const cancelButton = document.createElement('button');
     cancelButton.type = 'button';
     cancelButton.className = 'file-cancel';
     cancelButton.textContent = 'Huỷ';
-    actions.append(saveButton, cancelButton);
+    actions.append(saveButton, downloadButton, cancelButton);
     el.append(nameEl, meta, bar, statusEl, noteEl, actions);
     const card: Card = {
-      id, name, size, incoming, state, note: '', failure: '', kept: 'download', sink: null, bytes: 0, samples: [],
-      lastPaint: Number.NEGATIVE_INFINITY, timer: null, el, bar, statusEl, noteEl, saveButton, cancelButton,
+      id, name, size, incoming, state, note: '', failure: '', kept: 'download', sink: null, blob: null, bytes: 0, samples: [],
+      lastPaint: Number.NEGATIVE_INFINITY, timer: null, el, bar, statusEl, noteEl, saveButton, downloadButton, cancelButton,
     };
     if (incoming && tooBigForMemory(card)) {
       card.note = 'File lớn hơn 512 MiB: cần trình duyệt có File System Access (Chrome, Edge) để lưu thẳng ra đĩa.';
     }
     saveButton.addEventListener('click', () => save(card));
+    downloadButton.addEventListener('click', () => {
+      const blob = card.blob;
+      if (blob === null) return;
+      // Inside the click: this is the user gesture the browser wants for a download.
+      download(card, blob);
+      card.blob = null;
+      paint(card);
+    });
     cancelButton.addEventListener('click', () => cancel(card));
     all.push(card);
     if (id !== '') byId.set(id, card);
@@ -526,7 +544,7 @@ export function createFileTransfers(host: FileTransfersHost): FileTransfers {
               finish(card, 'failed', failureText(FILE_IO_REASON));
               break;
             }
-            download(card, blob);
+            card.blob = blob;
           }
           card.bytes = card.size;
           card.sink = null;
@@ -552,6 +570,7 @@ export function createFileTransfers(host: FileTransfersHost): FileTransfers {
       for (const card of all) {
         if (card.timer !== null) clearTimeout(card.timer);
         card.timer = null;
+        card.blob = null;
         if (!isFinal(card)) finish(card, 'canceled');
         card.el.remove();
       }
