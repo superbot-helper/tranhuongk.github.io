@@ -24,13 +24,17 @@ import {
 } from '../session/relay-session';
 import { connectFormError, formatStats, loadToken, mountDiagnostics, readStorage, REASONS, saveToken } from '../spike/diagnostics';
 import { AUDIO_VOLUMES, AudioPlayer, AudioPlayerError, type AudioVolume } from './audio-player';
+import { openAnnotator, type AnnotatorHandle } from './annotate';
+import { canvasToPng, captureFileName, downloadBlob, snapshotCanvas } from './capture';
+import { createCaptureToast, type CaptureToast } from './capture-toast';
 import { createChatPanel } from './chat-panel';
 import { ClipboardSync } from './clipboard-sync';
 import { CursorLayer } from './cursor-layer';
 import { attachDropZone, createFileTransfers, type FileTransferSession } from './file-transfers';
 import { DesktopInput } from './input';
+import { RecorderError, recorderSupport, ScreenRecorder, type RecorderLike, type RecorderOptions, type RecorderSupport, type Recording } from './recorder';
 import { ScreenView, type Crop, type ScaleMode } from './screen';
-import { createToolbar, type SpecialKey } from './toolbar';
+import { createToolbar, type CaptureKind, type SpecialKey } from './toolbar';
 import { attachTouch, ViewZoom } from './touch';
 
 /** The RelaySession surface the page uses (a fake one in tests and in the dev-only demo). */
@@ -62,7 +66,21 @@ export interface ViewerDeps {
   createAudioPlayer?: () => AudioPlayerLike;
   /** Local screen size in device pixels (login fields 3/4). */
   screenSize?: () => { width: number; height: number };
+  /** Screen recording (a fake one in tests); defaults to MediaRecorder on a canvas. */
+  recording?: ScreenRecording;
 }
+
+/** The recording surface the page uses. */
+export interface ScreenRecording {
+  support(): RecorderSupport;
+  /** Starts recording the screen canvas; throws RecorderError. */
+  start(o: Pick<RecorderOptions, 'source' | 'onTick' | 'onError'>): RecorderLike;
+}
+
+const defaultRecording: ScreenRecording = {
+  support: () => recorderSupport(),
+  start: (o) => ScreenRecorder.start(o),
+};
 
 /** The AudioPlayer surface the page uses. */
 export interface AudioPlayerLike {
@@ -123,6 +141,7 @@ const LAYOUT = `
     </div>
     <div id="chat-panel"></div>
     <div id="clipboard-toast"></div>
+    <div id="capture-toast"></div>
   </section>
   <details id="diagnostics"></details>`;
 
@@ -218,6 +237,14 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
   let audioGen = 0;
   let audioNotice = '';
   let selectedMonitor = 0;
+  // Screenshots / recording. `captureModal` pauses input to Windows while the annotator is open.
+  let captureModal: AnnotatorHandle | null = null;
+  let recorder: RecorderLike | null = null;
+  let recordingName = '';
+  let recordingSeconds = 0;
+  let frameSeen = false;
+  let destroyed = false;
+  const recording = deps.recording ?? defaultRecording;
   let startedAt = 0;
   let clock: ReturnType<typeof setInterval> | null = null;
 
@@ -256,10 +283,16 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
   );
   /** The overlay follows the screen canvas box, frame size, crop and scale (inside the zoom wrapper: unzoomed). */
   const syncCursorView = () => cursorLayer.setView(zoom.layoutView(screenView.view()));
-  const draw = createFrameScheduler<ScreenBitmap>((bitmap) => {
+  const paintFrame = (bitmap: ScreenBitmap) => {
     screenView.draw(bitmap);
     syncCursorView();
-  }, deps.schedule);
+    recorder?.frame();
+    if (!frameSeen) {
+      frameSeen = true;
+      refreshCapture();
+    }
+  };
+  const draw = createFrameScheduler<ScreenBitmap>(paintFrame, deps.schedule);
   const resizeObserver =
     typeof ResizeObserver === 'function'
       ? new ResizeObserver(() => {
@@ -405,6 +438,8 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
         persistAudioVolume();
         focusUnlessTouch();
       },
+      capture: (kind) => capture(kind),
+      record: () => (recorder ? void stopRecording() : startRecording()),
       fullscreen: () => toggleFullscreen(),
       refresh: () => {
         session?.refreshScreen().catch((e: unknown) => log(`Làm mới lỗi: ${describe(e)}`));
@@ -420,6 +455,7 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     history: (entries) => chatPanel.setClipboardHistory(entries),
     log,
   });
+  const captureToast: CaptureToast = createCaptureToast($<HTMLDivElement>('capture-toast'));
   const chatEl = $<HTMLDivElement>('chat-panel');
   /** The desktop panel starts below the toolbar and notices (level with the screen); see index.html. */
   function placeChat(): void {
@@ -490,7 +526,8 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
   }
 
   function refreshControl(): void {
-    const active = peer !== null && controlOn && controlAllowed;
+    // While the annotator is open nothing is sent to Windows (the toggle itself is unchanged).
+    const active = peer !== null && controlOn && controlAllowed && captureModal === null;
     input.setEnabled(active);
     toolbar.setState({ controlOn, controlAllowed, controlActive: active, keyboard: peer?.supportsBinaryKeyboard ?? false });
     refreshAudio();
@@ -504,6 +541,104 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     // The browser cursor is hidden (cursor:none) only while controlling AND a remote shape is known.
     controlActive = active;
     updateControlling();
+  }
+
+  // --- screenshots, annotation, recording ----------------------------------------------------
+  function refreshCapture(): void {
+    const support = recording.support();
+    toolbar.setCapture({
+      available: peer !== null && frameSeen,
+      recordReason: support.ok ? undefined : support.reason,
+      recording: recorder !== null,
+      seconds: recordingSeconds,
+    });
+  }
+
+  /** `<máy>` of the file names. */
+  const machineName = () => peer?.displayName || 'UltraViewer';
+
+  function capture(kind: CaptureKind): void {
+    if (!peer || !screenView.hasFrame || captureModal) return;
+    if (kind === 'full') {
+      const name = captureFileName(machineName(), new Date(), 'png');
+      // toBlob copies the pixels now; the download starts from its callback, from this click.
+      canvasToPng(canvas).then(
+        (blob) => downloadBlob(blob, name),
+        () => captureToast.notice('Không tạo được ảnh PNG.'),
+      );
+      focusUnlessTouch();
+      return;
+    }
+    const name = machineName();
+    input.releaseAll();
+    captureModal = openAnnotator({
+      image: snapshotCanvas(canvas),
+      selectRegion: kind === 'region',
+      save: (blob) => downloadBlob(blob, captureFileName(name, new Date(), 'png')),
+      closed: () => {
+        captureModal = null;
+        refreshControl();
+        focusUnlessTouch();
+      },
+      failed: () => log('Tạo ảnh PNG lỗi.'),
+    });
+    refreshControl();
+  }
+
+  function startRecording(): void {
+    if (recorder) return;
+    const support = recording.support();
+    if (!support.ok) {
+      refreshCapture();
+      captureToast.notice(support.reason);
+      return;
+    }
+    if (!peer || !screenView.hasFrame) return;
+    captureToast.hide(); // a finished video not downloaded yet is dropped
+    recordingName = machineName();
+    try {
+      recorder = recording.start({
+        source: canvas,
+        onTick: (s) => {
+          recordingSeconds = s;
+          refreshCapture();
+        },
+        onError: () => {
+          log('Trình duyệt báo lỗi khi mã hoá video: đã dừng quay.');
+          void stopRecording();
+        },
+      });
+    } catch (e) {
+      log(`Không bắt đầu được quay: ${e instanceof RecorderError ? e.code : describe(e)}`);
+      captureToast.notice('Không bắt đầu được quay video.');
+      return;
+    }
+    recordingSeconds = 0;
+    refreshCapture();
+    focusUnlessTouch();
+  }
+
+  /** Finishes the recording (Stop, disconnect, encoder error) and offers the video for download. */
+  async function stopRecording(): Promise<void> {
+    const current = recorder;
+    if (!current) return;
+    recorder = null;
+    const name = recordingName;
+    refreshCapture();
+    const result: Recording | null = await current.stop().catch(() => null);
+    if (destroyed) return;
+    if (!result) {
+      captureToast.notice('Không có dữ liệu video để lưu.');
+      return;
+    }
+    const file = captureFileName(name, result.startedAt, result.ext);
+    const m = Math.floor(result.seconds / 60);
+    const length = `${m}:${String(result.seconds % 60).padStart(2, '0')}`;
+    const size = result.blob.size < 1024 * 1024 ? `${Math.max(1, Math.round(result.blob.size / 1024))} KB` : `${(result.blob.size / (1024 * 1024)).toFixed(1)} MB`;
+    captureToast.offer(`Đã quay xong (${length}, ${size}).`, {
+      label: 'Tải video về',
+      run: () => downloadBlob(result.blob, file),
+    });
   }
 
   function refreshAudio(): void {
@@ -582,6 +717,7 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     zoom.reset();
     screenView.setCrop(crop);
     syncCursorView();
+    recorder?.frame();
     if (peer) toolbar.setMonitors(peer.monitors, selectedMonitor);
   }
 
@@ -659,6 +795,9 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
   }
 
   function onClosed(reason: keyof typeof REASONS | null): void {
+    // First: the recording takes the last frame still on the canvas, then offers the video.
+    void stopRecording();
+    frameSeen = false;
     input.stop();
     touch.reset();
     draw.clear();
@@ -671,6 +810,7 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     controlAllowed = false;
     overflowNotice = false;
     stopAudio(false); // refreshes the toolbar and notices
+    refreshCapture();
     chatPanel.reset();
     clipboardSync.reset();
     fileTransfers.reset();
@@ -720,8 +860,10 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     controlOn = true;
     overflowNotice = false;
     selectedMonitor = 0;
+    frameSeen = false;
     stopAudio(false);
     toolbar.reset();
+    refreshCapture();
     chatPanel.reset();
     clipboardSync.reset();
     fileTransfers.clear();
@@ -756,6 +898,8 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
               break;
             case 'frame':
               draw.push(e.bitmap);
+              // rAF does not run in a background tab: while recording, paint right away.
+              if (recorder && document.visibilityState === 'hidden') paintFrame(e.bitmap);
               break;
             case 'cursor':
               onCursorEvent(e.event);
@@ -817,10 +961,16 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
   window.addEventListener('pagehide', onPageHide);
 
   refreshControl();
+  refreshCapture();
   setTools(false);
 
   return {
     destroy() {
+      destroyed = true;
+      recorder?.abort();
+      recorder = null;
+      captureModal?.close();
+      captureToast.dispose();
       touch.detach();
       window.removeEventListener('blur', onWindowBlur);
       dropHeldPosition();

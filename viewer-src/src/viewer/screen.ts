@@ -34,6 +34,11 @@ export class ScreenView {
     this.applyScale();
   }
 
+  /** A decoded frame is on the canvas (false before the first one and after `forget()`). */
+  get hasFrame(): boolean {
+    return this.last !== null;
+  }
+
   get scale(): ScaleMode {
     return this.mode;
   }

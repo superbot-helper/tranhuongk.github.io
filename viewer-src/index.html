@@ -36,7 +36,7 @@
       .menu { position: relative; }
       .menu summary { cursor: pointer; list-style: none; border: 1px solid rgba(127, 127, 127, 0.6); border-radius: 4px; }
       .menu summary::-webkit-details-marker { display: none; }
-      .menu-items { position: absolute; z-index: 10; top: 100%; left: 0; display: flex; flex-direction: column; gap: 4px;
+      .menu-items { position: absolute; z-index: 10; top: 100%; left: 0; width: max-content; max-width: 80vw; display: flex; flex-direction: column; gap: 4px;
                     padding: 6px; background: Canvas; border: 1px solid rgba(127, 127, 127, 0.6); border-radius: 4px; }
       #notice { margin: 0; padding: 6px 10px; font-size: 0.85rem; background: rgba(255, 193, 7, 0.2); border-radius: 4px; flex: none; }
       #notice[hidden] { display: none; }
@@ -131,6 +131,24 @@
                background: rgba(20, 20, 20, 0.9); color: #fff; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35); }
       .toast[hidden], .toast button[hidden] { display: none; }
       .toast button { font-size: 0.85rem; padding: 4px 10px; }
+      .capture-toast { bottom: 64px; }
+      /* Screenshot annotator: a full-page modal; the canvas takes every touch (drawing), buttons stay finger-sized. */
+      .cap-modal { position: fixed; inset: 0; z-index: 100; display: flex; flex-direction: column; box-sizing: border-box;
+                   background: #0c0c0c; color: #fff; touch-action: none;
+                   padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right))
+                            max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left)); gap: 8px; }
+      .cap-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; flex: none; }
+      .cap-group { display: flex; flex-wrap: wrap; gap: 6px; }
+      .cap-modal button { font-size: 0.95rem; min-height: 40px; padding: 6px 12px; touch-action: manipulation; }
+      .cap-modal button[aria-pressed="true"] { font-weight: 600; outline: 2px solid #fff; outline-offset: -2px; }
+      .cap-ink { width: 40px; min-width: 40px; border-radius: 50%; background: var(--ink); border: 2px solid rgba(255, 255, 255, 0.6); padding: 0; }
+      .cap-stage { flex: 1 1 auto; min-height: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+      .cap-canvas { display: block; touch-action: none; user-select: none; -webkit-user-select: none; cursor: crosshair; background: #000; }
+      .cap-foot { justify-content: flex-start; }
+      .cap-spacer { flex: 1; }
+      .cap-size { font-size: 0.85rem; opacity: 0.85; }
+      .cap-error { margin: 0; font-size: 0.85rem; color: #ff8a80; flex: none; }
+      .cap-error[hidden] { display: none; }
       details#diagnostics { flex: none; }
       details#diagnostics label, details#diagnostics button { margin-top: 8px; }
       #stats { font-size: 0.8rem; opacity: 0.75; margin: 4px 0; min-height: 1em; }

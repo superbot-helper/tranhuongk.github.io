@@ -1,9 +1,11 @@
-// Viewer toolbar: Điều khiển, Màn hình, Scale, Chất lượng, Ẩn wallpaper, Phím, Chat (unread
-// badge), Clipboard (opt-in sharing), Âm thanh + Âm lượng, Toàn màn hình, Làm mới, Ngắt. Pure DOM: it reports choices to the handlers and shows the state it is given.
+// Viewer toolbar: Điều khiển, Màn hình, Scale, Chất lượng, Ẩn wallpaper, Phím, Chụp (screenshots,
+// recording), Chat (unread badge), Clipboard (opt-in sharing), Âm thanh + Âm lượng, Toàn màn hình, Làm mới, Ngắt. Pure DOM: it reports choices to the handlers and shows the state it is given.
 import type { QualityPreset, RemoteMonitor } from '../proto/commands';
 import { AUDIO_VOLUMES, type AudioVolume } from './audio-player';
 import type { SyntheticKey } from './input';
 import type { ScaleMode } from './screen';
+
+export type CaptureKind = 'annotate' | 'region' | 'full';
 
 export type SpecialKey = 'ctrlAltDel' | SyntheticKey;
 
@@ -19,6 +21,10 @@ export interface ToolbarHandlers {
   chat(): void;
   /** Clipboard sharing switched by the user. */
   clipboard(on: boolean): void;
+  /** A screenshot action from the "Chụp" menu: annotate, one region, or the whole frame as a PNG. */
+  capture(kind: CaptureKind): void;
+  /** "Quay màn hình" / "Dừng quay": start or stop the recording. */
+  record(): void;
   /** Computer audio switched by the user; runs inside the click (autoplay policy). */
   audio(on: boolean): void;
   audioVolume(volume: AudioVolume): void;
@@ -49,6 +55,11 @@ export interface Toolbar {
   setClipboard(s: { on: boolean; available: boolean; reason?: string }): void;
   /** Computer audio: `available` only while a session is connected. */
   setAudio(s: { on: boolean; available: boolean; volume: AudioVolume }): void;
+  /**
+   * "Chụp" menu. `available`: a decoded frame exists. `recordReason` explains a disabled
+   * "Quay màn hình" (the browser cannot record). `seconds`: length of the running recording.
+   */
+  setCapture(s: { available: boolean; recordReason?: string; recording: boolean; seconds: number }): void;
   /** Back to defaults for a new session. */
   reset(): void;
 }
@@ -82,6 +93,15 @@ export function createToolbar(root: HTMLElement, h: ToolbarHandlers, o: { fullsc
       <summary>Phím</summary>
       <div class="menu-items">${SPECIAL_KEYS.map(([k, label]) => `<button type="button" data-special="${k}">${label}</button>`).join('')}</div>
     </details>
+    <details id="capture-menu" class="menu">
+      <summary>Chụp</summary>
+      <div class="menu-items">
+        <button type="button" data-capture="annotate">Chụp và chú thích…</button>
+        <button type="button" data-capture="region">Chụp một vùng…</button>
+        <button type="button" data-capture="full">Lưu toàn màn hình (PNG)</button>
+        <button type="button" id="record-toggle">Quay màn hình</button>
+      </div>
+    </details>
     <button id="chat-toggle" type="button" aria-expanded="false" aria-controls="chat-panel">Chat <span class="badge" hidden></span></button>
     <button id="clipboard-toggle" type="button" aria-pressed="false">Clipboard: tắt</button>
     <button id="audio-toggle" type="button" aria-pressed="false">Âm thanh: tắt</button>
@@ -103,6 +123,10 @@ export function createToolbar(root: HTMLElement, h: ToolbarHandlers, o: { fullsc
   const clipboard = $<HTMLButtonElement>('clipboard-toggle');
   const audio = $<HTMLButtonElement>('audio-toggle');
   const audioVolume = $<HTMLSelectElement>('audio-volume');
+  const captureMenu = $<HTMLDetailsElement>('capture-menu');
+  const captureSummary = captureMenu.querySelector<HTMLElement>('summary')!;
+  const captureButtons = [...root.querySelectorAll<HTMLButtonElement>('[data-capture]')];
+  const record = $<HTMLButtonElement>('record-toggle');
   const specialButtons = [...root.querySelectorAll<HTMLButtonElement>('[data-special]')];
   fullscreen.disabled = !o.fullscreenSupported;
   if (!o.fullscreenSupported) fullscreen.title = 'Trình duyệt này không hỗ trợ toàn màn hình cho trang.';
@@ -125,6 +149,16 @@ export function createToolbar(root: HTMLElement, h: ToolbarHandlers, o: { fullsc
       h.special(b.dataset.special as SpecialKey);
     });
   }
+  for (const b of captureButtons) {
+    b.addEventListener('click', () => {
+      captureMenu.open = false;
+      h.capture(b.dataset.capture as CaptureKind);
+    });
+  }
+  record.addEventListener('click', () => {
+    captureMenu.open = false;
+    h.record();
+  });
   chat.addEventListener('click', () => h.chat());
   clipboard.addEventListener('click', () => h.clipboard(clipboard.getAttribute('aria-pressed') !== 'true'));
   audio.addEventListener('click', () => h.audio(audio.getAttribute('aria-pressed') !== 'true'));
@@ -183,8 +217,24 @@ export function createToolbar(root: HTMLElement, h: ToolbarHandlers, o: { fullsc
       audio.title = s.available ? 'Nghe âm thanh từ máy Windows (chỉ trên trình duyệt này).' : 'Dùng được khi đã kết nối với máy Windows.';
       audioVolume.value = String(s.volume);
     },
+    setCapture(s) {
+      for (const b of captureButtons) {
+        b.disabled = !s.available;
+        b.title = s.available ? '' : 'Dùng được khi đã nhận được hình từ máy Windows.';
+      }
+      const unsupported = s.recordReason !== undefined;
+      record.disabled = unsupported || (!s.recording && !s.available);
+      record.title = unsupported ? s.recordReason! : s.available || s.recording ? '' : 'Dùng được khi đã nhận được hình từ máy Windows.';
+      record.setAttribute('aria-pressed', String(s.recording));
+      const m = Math.floor(s.seconds / 60);
+      const clock = `${m}:${String(s.seconds % 60).padStart(2, '0')}`;
+      record.textContent = s.recording ? `Dừng quay (${clock})` : 'Quay màn hình';
+      captureSummary.textContent = s.recording ? `Chụp ● ${clock}` : 'Chụp';
+      captureSummary.setAttribute('aria-label', s.recording ? `Chụp (đang quay ${clock})` : 'Chụp');
+    },
     reset() {
       special.open = false;
+      captureMenu.open = false;
       wallpaper.checked = false;
       quality.value = 'auto';
     },
