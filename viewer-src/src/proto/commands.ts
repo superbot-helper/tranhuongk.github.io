@@ -3,6 +3,8 @@
 // Verified viewer-to-host application commands. The session owns approval, control
 // permission and routing; these pure builders never execute an action.
 
+import { utf16le } from './utf16';
+
 export interface RemoteMessage {
   bytes: Uint8Array;
   /** True when `bytes` are UTF-16LE (Unicode SendString), false for ASCII. */
@@ -40,13 +42,7 @@ function ascii(text: string): RemoteMessage {
 }
 
 function unicode(text: string): RemoteMessage {
-  const bytes = new Uint8Array(text.length * 2);
-  for (let i = 0; i < text.length; i++) {
-    const unit = text.charCodeAt(i);
-    bytes[i * 2] = unit & 0xff;
-    bytes[i * 2 + 1] = unit >> 8;
-  }
-  return { bytes, formatFlag: true };
+  return { bytes: utf16le(text), formatFlag: true };
 }
 
 /** ChangeDisplayQuality: ASCII signed Long. UI limits belong to the caller. */
