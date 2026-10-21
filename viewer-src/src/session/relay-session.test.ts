@@ -15,6 +15,7 @@ import { concat, enc, u8 } from '../proto/test-utils';
 import { utf16le } from '../proto/utf16';
 import { rawZstdFrame } from '../proto/clipboard';
 import { readFileSync } from 'node:fs';
+import type { FileSink, FileSource } from './file-engine';
 import type { PcmDecoder } from './control';
 import type { ClientIdentity } from './identity';
 import { COMMAND_ATTEMPT_MS, RelaySession, type RelaySessionDeps, type SessionEvent } from './relay-session';
@@ -1354,5 +1355,139 @@ describe('RelaySession tools', () => {
     for (const secret of ['SENTINELCHATOUT', 'SENTINELCLIPOUT', 'SENTINELCHATIN', 'SENTINELCLIPIN']) expect(log).not.toContain(secret);
     expect(log).toContain('nhận tin nhắn chat');
     w.session.close();
+  });
+  // Phase 2 Task 4: file transfer routing (13-16/21) on top of the engine (file-engine.test.ts).
+  describe('file transfer', () => {
+    const fileEvents = (w: World) => w.events.flatMap((e) => (e.type === 'file' ? [e.event] : []));
+    const dbl = (n: number) => {
+      const out = new Uint8Array(8);
+      new DataView(out.buffer).setFloat64(0, n, true);
+      return out;
+    };
+    const offerParts = (id: string, name: string, size: number) => [u8(13, 0), enc(id), enc(name), dbl(size)];
+    const chunkParts = (id: string, offset: number, data: Uint8Array) => [u8(15, 0), enc(id), dbl(offset), data];
+    const flush = () => new Promise<void>((r) => setTimeout(r, 0));
+    class Sink implements FileSink {
+      chunks: Uint8Array[] = [];
+      closed = false;
+      aborted = false;
+      async write(c: Uint8Array) {
+        this.chunks.push(c);
+      }
+      async close() {
+        this.closed = true;
+      }
+      async abort() {
+        this.aborted = true;
+      }
+    }
+    const memorySource = (bytes: Uint8Array): FileSource => ({ size: bytes.length, read: async (o, l) => bytes.slice(o, o + l) });
+
+    test('receive: offer, accept ("14|||id|||1"), chunk, per-chunk ack "21|||id", completed', async () => {
+      const w = await activeWorld();
+      deliver(w, offerParts('123', 'a.txt', 3));
+      await waitFor(() => fileEvents(w).length === 1);
+      expect(fileEvents(w)[0]).toEqual({ type: 'incoming', id: '123', name: 'a.txt', size: 3 });
+      const sink = new Sink();
+      await w.session.acceptFile('123', sink);
+      expect(w.peerForwards.at(-1)).toEqual({ formatFlag: true, payload: unicode('14|||123|||1') });
+      deliver(w, chunkParts('123', 1, u8(1, 2, 3)));
+      await waitFor(() => fileEvents(w).some((e) => e.type === 'completed'));
+      expect(w.peerForwards.at(-1)).toEqual({ formatFlag: true, payload: unicode('21|||123') });
+      expect(concat(...sink.chunks)).toEqual(u8(1, 2, 3));
+      expect(sink.closed).toBe(true);
+      w.session.close();
+    });
+
+    test('send: offer "13|||id|||name|||size", host accept, raw chunks (flag false), ack, completed', async () => {
+      const w = await activeWorld();
+      const bytes = Uint8Array.from({ length: 40_000 }, (_, i) => i & 255);
+      const id = w.session.sendFile('báo cáo.bin', memorySource(bytes));
+      await waitFor(() => w.peerForwards.some((f) => text16(f.payload).startsWith('13|||')));
+      const offer = w.peerForwards.find((f) => text16(f.payload).startsWith('13|||'))!;
+      expect(offer.formatFlag).toBe(true);
+      expect(text16(offer.payload)).toBe(`13|||${id}|||báo cáo.bin|||40000`);
+      deliver(w, [u8(14, 0), enc(id), u8(1, 0, 0, 0)]);
+      await waitFor(() => w.peerForwards.filter((f) => !f.formatFlag && text(f.payload).startsWith('15|||')).length === 2);
+      const raw = w.peerForwards.filter((f) => !f.formatFlag && text(f.payload).startsWith('15|||'));
+      expect(text(raw[0]!.payload.subarray(0, `15|||${id}|||1|||`.length))).toBe(`15|||${id}|||1|||`);
+      expect(text(raw[1]!.payload.subarray(0, `15|||${id}|||32001|||`.length))).toBe(`15|||${id}|||32001|||`);
+      deliver(w, [u8(21, 0), enc(id)]);
+      deliver(w, [u8(21, 0), enc(id)]);
+      await waitFor(() => fileEvents(w).some((e) => e.type === 'completed'));
+      w.session.close();
+    });
+    const text16 = (b: Uint8Array) => new TextDecoder('utf-16le').decode(b);
+
+    test('the tool gate: sendFile/acceptFile reject before accepted, and incoming file messages are dropped', async () => {
+      const w = new World({ initParts: null, sendFrameAfter17: false });
+      w.connect();
+      await waitFor(() => w.peerTexts.some((t) => t.startsWith('login:')));
+      expect(() => w.session.sendFile('a', memorySource(u8(1)))).toThrowError(expect.objectContaining({ code: 'toolsUnavailable' }));
+      await expect(w.session.acceptFile('1', new Sink())).rejects.toMatchObject({ code: 'toolsUnavailable' });
+      deliver(w, offerParts('1', 'a', 1));
+      await flush();
+      expect(fileEvents(w)).toEqual([]);
+      w.session.close();
+    });
+
+    test('file transfer does not depend on the control permission (49 view-only)', async () => {
+      const w = await activeWorld();
+      deliver(w, [u8(49), u8(1)]);
+      deliver(w, offerParts('7', 'a', 1));
+      await waitFor(() => fileEvents(w).length === 1);
+      expect(fileEvents(w)[0]).toMatchObject({ type: 'incoming', id: '7' });
+      w.session.close();
+    });
+
+    test('malformed file messages are dropped; a duplicate offer is ignored; cancel from the host', async () => {
+      const w = await activeWorld();
+      deliver(w, [u8(13, 0), enc('1'), enc('a|||b'), dbl(1)]);
+      deliver(w, [u8(15, 0), enc('1'), dbl(0), u8(1)]);
+      deliver(w, offerParts('2', 'a', 3));
+      deliver(w, offerParts('2', 'a', 3));
+      await waitFor(() => fileEvents(w).length >= 1);
+      await flush();
+      expect(fileEvents(w)).toHaveLength(1);
+      const sink = new Sink();
+      await w.session.acceptFile('2', sink);
+      deliver(w, [u8(16, 0), enc('2')]);
+      await waitFor(() => fileEvents(w).some((e) => e.type === 'canceled'));
+      expect(sink.aborted).toBe(true);
+      w.session.close();
+    });
+
+    test('cancelFile tells the host ("16|||id") and a disconnect aborts every transfer before `closed`', async () => {
+      const w = await activeWorld();
+      deliver(w, offerParts('1', 'a', 100));
+      deliver(w, offerParts('2', 'b', 100));
+      await waitFor(() => fileEvents(w).length === 2);
+      const sink = new Sink();
+      await w.session.acceptFile('2', sink);
+      await w.session.cancelFile('1');
+      expect(w.peerForwards.at(-1)).toEqual({ formatFlag: true, payload: unicode('16|||1') });
+      const sent = w.peerForwards.length;
+      w.session.close();
+      expect(sink.aborted).toBe(true);
+      expect(sink.closed).toBe(false);
+      const events = w.events;
+      const canceledAt = events.findIndex((e) => e.type === 'file' && e.event.type === 'canceled' && e.event.id === '2');
+      expect(canceledAt).toBeGreaterThan(-1);
+      expect(canceledAt).toBeLessThan(events.findIndex((e) => e.type === 'closed'));
+      await expect(w.session.cancelFile('2')).resolves.toBeUndefined();
+      await flush();
+      expect(w.peerForwards.slice(sent).filter((f) => text16(f.payload).startsWith('16|||'))).toEqual([]);
+    });
+
+    test('secrecy: file names and contents never reach a status string', async () => {
+      const w = await activeWorld();
+      deliver(w, offerParts('1', 'SENTINELFILENAME.txt', 3));
+      await waitFor(() => fileEvents(w).length === 1);
+      await w.session.acceptFile('1', new Sink());
+      deliver(w, chunkParts('1', 1, enc('SEN')));
+      await waitFor(() => fileEvents(w).some((e) => e.type === 'completed'));
+      expect(w.statuses().join('\n')).not.toContain('SENTINELFILENAME');
+      w.session.close();
+    });
   });
 });

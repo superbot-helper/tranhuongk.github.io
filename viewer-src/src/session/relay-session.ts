@@ -8,9 +8,10 @@
 // handling. Phase 1 adds the control API (send 217-224, sendCommand 261-265, refreshScreen
 // 226-238), cursor 3/4/28 (716-718), host re-login 23 (828-832) and input permission 49
 // (848-853); pure helpers live in ./control. Phase 2 adds chat 12/29/30, clipboard 5/33 (opt-in,
-// off by default) and computer audio 42/43 (G.722 decoded to PCM events) behind the Swift
+// off by default), computer audio 42/43 (G.722 decoded to PCM events) and file transfer
+// 13-16/21 (./file-engine, routed by consumeFile/sendFile/acceptFile/cancelFile) behind the Swift
 // `canUseSessionTools` gate (peerAccepted && phase in {active, login}); audio needs `active`.
-// No LAN direct or files yet: every other application id (including 26, no relay retargeting)
+// No LAN direct: every other application id (including 26, no relay retargeting)
 // is logged once as `ignored <id>` and dropped.
 //
 // Web additions (no Swift equivalent): the command host is resolved over DoH and its IPv4
@@ -28,6 +29,7 @@ import { TlsError, type ByteChannel } from '../net/tls';
 import { G722Decoder } from '../codec/g722-decoder';
 import { loadScreenDictionary } from '../codec/screen-dictionary';
 import { chatMessagePayload, chatTypingPayload } from '../proto/chat';
+import { decodeFileMessage } from '../proto/file-offer';
 import { clipboardPayload, makeClipboardZstd, type ClipboardZstd } from '../proto/clipboard';
 import { commandPayload, type RemoteCommand, type RemoteMonitor } from '../proto/commands';
 import { makeCursorZstd, type CursorEvent, type CursorZstd } from '../proto/cursor';
@@ -48,6 +50,7 @@ import {
   BINARY_KEYBOARD_VERSION, canUseTools, decodeAudio, decodeChatMessage, decodeClipboardMessage, decodeCursor,
   initMonitors, SessionAudioDecoder, versionAtLeast, viewOnlyFlag, type PcmDecoder,
 } from './control';
+import { FileTransferEngine, type FileEvent, type FileSink, type FileSource } from './file-engine';
 import type { ClientIdentity } from './identity';
 
 export { versionAtLeast } from './control';
@@ -119,6 +122,8 @@ export type SessionEvent =
   | { type: 'clipboard'; text: string }
   /** Commands 42/43 while active and computer audio is on: interleaved 48 kHz stereo Int16. */
   | { type: 'audio'; pcm: Int16Array }
+  /** File transfer progress (commands 13-16/21 and sendFile/acceptFile/cancelFile). Only ids, never names, are logged. */
+  | { type: 'file'; event: FileEvent }
   /** `canUseSessionTools()` changed: true at the first accepted init, false when the session ends. */
   | { type: 'tools'; available: boolean }
   | { type: 'closed'; reason: SessionFailure | null };
@@ -397,7 +402,15 @@ export class RelaySession {
   private readonly foreignSources = new Set<string>();
   private diag: SessionDiagnostics = freshDiagnostics();
 
-  constructor(private readonly deps: RelaySessionDeps) {}
+  /** Swift `files` + fileOutbox: all file messages leave through the engine's one serialized outbox. */
+  private readonly files = new FileTransferEngine(async (m) => {
+    if (!this.canUseSessionTools() || this.peer === null) throw new RelaySessionError('toolsUnavailable');
+    this.sendToPeer(m.bytes, m.formatFlag);
+  });
+
+  constructor(private readonly deps: RelaySessionDeps) {
+    this.files.onEvent((event) => this.on({ type: 'file', event }));
+  }
 
   get phase(): SessionPhase {
     return this.state;
@@ -506,6 +519,27 @@ export class RelaySession {
     } catch (e) {
       this.audioEnabled = previous;
       throw e;
+    }
+  }
+
+  /** Swift sendFile: offers `source` (read by 32,000-byte parts after the host accepts); returns the transfer id. */
+  sendFile(name: string, source: FileSource): string {
+    this.requireTools();
+    return this.files.offer(name, source);
+  }
+
+  /** Swift acceptFile: the caller chose where the file goes (`sink`). */
+  async acceptFile(id: string, sink: FileSink): Promise<void> {
+    this.requireTools();
+    await this.files.accept(id, sink);
+  }
+
+  /** Swift cancelFile: always cancels locally; the host is told only while the tools gate is open. */
+  async cancelFile(id: string): Promise<void> {
+    try {
+      await this.files.cancel(id);
+    } catch (e) {
+      if (!(e instanceof RelaySessionError)) throw e;
     }
   }
 
@@ -812,6 +846,18 @@ export class RelaySession {
       case 42:
       case 43:
         this.consumeAudio(parts, gen);
+        return;
+      case 13:
+      case 14:
+      case 15:
+      case 16:
+      case 21:
+        // Gate closed or malformed: dropped. The engine copies the chunk view before returning.
+        if (!this.canUseSessionTools()) return;
+        {
+          const message = decodeFileMessage(parts);
+          if (message !== null) void this.files.handle(message);
+        }
         return;
       case 23:
         // Swift 828-832: the host asks for a new Login; the screen stays (no clear).
@@ -1130,6 +1176,7 @@ export class RelaySession {
     if (this.state === 'closed') return;
     this.state = 'closed';
     this.generation++;
+    this.files.reset(); // Swift files.reset(): sinks aborted, `canceled` events, outbox cleared.
     this.clearDeadline();
     if (this.heartbeat !== null) clearInterval(this.heartbeat);
     if (this.watchdog !== null) clearInterval(this.watchdog);
