@@ -138,6 +138,20 @@ describe('AudioPlayer', () => {
     expect(port.messages[1]!.pcm).toEqual(new Int16Array(9600));
   });
 
+  test('push and silence post nothing while the context is not running (e.g. the browser suspended it)', async () => {
+    const player = new AudioPlayer();
+    await player.start();
+    const ctx = FakeContext.instances[0]!;
+    const port = FakeNode.last!.port;
+    ctx.state = 'suspended';
+    player.push(Int16Array.of(1, 2));
+    player.silence(400);
+    expect(port.messages).toEqual([]);
+    ctx.state = 'running';
+    player.push(Int16Array.of(1, 2));
+    expect(port.messages).toHaveLength(1);
+  });
+
   test('a huge silence request is clamped to the queue cap before allocating', async () => {
     const player = new AudioPlayer();
     await player.start();

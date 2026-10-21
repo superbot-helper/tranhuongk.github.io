@@ -1,6 +1,7 @@
 // Viewer toolbar: Điều khiển, Màn hình, Scale, Chất lượng, Ẩn wallpaper, Phím, Chat (unread
-// badge), Clipboard (opt-in sharing), Toàn màn hình, Làm mới, Ngắt. Pure DOM: it reports choices to the handlers and shows the state it is given.
+// badge), Clipboard (opt-in sharing), Âm thanh + Âm lượng, Toàn màn hình, Làm mới, Ngắt. Pure DOM: it reports choices to the handlers and shows the state it is given.
 import type { QualityPreset, RemoteMonitor } from '../proto/commands';
+import { AUDIO_VOLUMES, type AudioVolume } from './audio-player';
 import type { SyntheticKey } from './input';
 import type { ScaleMode } from './screen';
 
@@ -18,6 +19,9 @@ export interface ToolbarHandlers {
   chat(): void;
   /** Clipboard sharing switched by the user. */
   clipboard(on: boolean): void;
+  /** Computer audio switched by the user; runs inside the click (autoplay policy). */
+  audio(on: boolean): void;
+  audioVolume(volume: AudioVolume): void;
   fullscreen(): void;
   refresh(): void;
   disconnect(): void;
@@ -43,6 +47,8 @@ export interface Toolbar {
   setChat(s: { open: boolean; unread: number }): void;
   /** `reason` explains a disabled button (tools unavailable). */
   setClipboard(s: { on: boolean; available: boolean; reason?: string }): void;
+  /** Computer audio: `available` only while a session is connected. */
+  setAudio(s: { on: boolean; available: boolean; volume: AudioVolume }): void;
   /** Back to defaults for a new session. */
   reset(): void;
 }
@@ -78,6 +84,8 @@ export function createToolbar(root: HTMLElement, h: ToolbarHandlers, o: { fullsc
     </details>
     <button id="chat-toggle" type="button" aria-expanded="false" aria-controls="chat-panel">Chat <span class="badge" hidden></span></button>
     <button id="clipboard-toggle" type="button" aria-pressed="false">Clipboard: tắt</button>
+    <button id="audio-toggle" type="button" aria-pressed="false">Âm thanh: tắt</button>
+    <label>Âm lượng <select id="audio-volume">${AUDIO_VOLUMES.map((v) => `<option value="${v}">${v * 100}%</option>`).join('')}</select></label>
     <button id="fullscreen" type="button" aria-pressed="false">Toàn màn hình</button>
     <button id="refresh" type="button">Làm mới</button>
     <button id="toolbar-disconnect" type="button" class="danger">Ngắt</button>`;
@@ -93,6 +101,8 @@ export function createToolbar(root: HTMLElement, h: ToolbarHandlers, o: { fullsc
   const chat = $<HTMLButtonElement>('chat-toggle');
   const badge = chat.querySelector<HTMLSpanElement>('.badge')!;
   const clipboard = $<HTMLButtonElement>('clipboard-toggle');
+  const audio = $<HTMLButtonElement>('audio-toggle');
+  const audioVolume = $<HTMLSelectElement>('audio-volume');
   const specialButtons = [...root.querySelectorAll<HTMLButtonElement>('[data-special]')];
   fullscreen.disabled = !o.fullscreenSupported;
   if (!o.fullscreenSupported) fullscreen.title = 'Trình duyệt này không hỗ trợ toàn màn hình cho trang.';
@@ -117,6 +127,8 @@ export function createToolbar(root: HTMLElement, h: ToolbarHandlers, o: { fullsc
   }
   chat.addEventListener('click', () => h.chat());
   clipboard.addEventListener('click', () => h.clipboard(clipboard.getAttribute('aria-pressed') !== 'true'));
+  audio.addEventListener('click', () => h.audio(audio.getAttribute('aria-pressed') !== 'true'));
+  audioVolume.addEventListener('change', () => h.audioVolume(Number(audioVolume.value) as AudioVolume));
   fullscreen.addEventListener('click', () => h.fullscreen());
   $<HTMLButtonElement>('refresh').addEventListener('click', () => h.refresh());
   $<HTMLButtonElement>('toolbar-disconnect').addEventListener('click', () => h.disconnect());
@@ -163,6 +175,13 @@ export function createToolbar(root: HTMLElement, h: ToolbarHandlers, o: { fullsc
       clipboard.title = s.available
         ? 'Chia sẻ văn bản clipboard hai chiều với máy Windows: dán (⌘V / Ctrl+V) trong màn hình để gửi.'
         : (s.reason ?? '');
+    },
+    setAudio(s) {
+      audio.setAttribute('aria-pressed', String(s.on));
+      audio.textContent = s.on ? 'Âm thanh: bật' : 'Âm thanh: tắt';
+      audio.disabled = !s.available;
+      audio.title = s.available ? 'Nghe âm thanh từ máy Windows (chỉ trên trình duyệt này).' : 'Dùng được khi đã kết nối với máy Windows.';
+      audioVolume.value = String(s.volume);
     },
     reset() {
       special.open = false;

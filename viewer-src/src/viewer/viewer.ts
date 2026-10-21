@@ -23,6 +23,7 @@ import {
   type SessionPhase,
 } from '../session/relay-session';
 import { connectFormError, formatStats, loadToken, mountDiagnostics, readStorage, REASONS, saveToken } from '../spike/diagnostics';
+import { AUDIO_VOLUMES, AudioPlayer, AudioPlayerError, type AudioVolume } from './audio-player';
 import { createChatPanel } from './chat-panel';
 import { ClipboardSync } from './clipboard-sync';
 import { CursorLayer } from './cursor-layer';
@@ -44,6 +45,8 @@ export interface ViewerSession extends FileTransferSession {
   sendChat(text: string): Promise<void>;
   sendTyping(typing: boolean): Promise<void>;
   setClipboardSharing(on: boolean): void;
+  /** Command 46 (`active` only). */
+  setComputerAudio(on: boolean): Promise<void>;
   sendClipboard(text: string): Promise<void>;
   close(): void;
 }
@@ -55,8 +58,18 @@ export interface ViewerDeps {
   schedule?: (cb: () => void) => void;
   /** Why this page cannot connect at all (insecure context: no crypto.subtle); shown at load, connecting is refused. */
   insecureNotice?: string | null;
+  /** The computer-audio player (a fake one in tests); created on the first click of "Âm thanh". */
+  createAudioPlayer?: () => AudioPlayerLike;
   /** Local screen size in device pixels (login fields 3/4). */
   screenSize?: () => { width: number; height: number };
+}
+
+/** The AudioPlayer surface the page uses. */
+export interface AudioPlayerLike {
+  start(): Promise<void>;
+  push(pcm: Int16Array): void;
+  setVolume(volume: AudioVolume): void;
+  stop(): void;
 }
 
 export interface ViewerHandle {
@@ -71,6 +84,9 @@ const TOOLS_UNAVAILABLE = 'Chat, file và clipboard dùng được khi đã kế
 const DROP_HINT = 'Thả file để gửi sang máy Windows';
 /** "1" when clipboard sharing should start on (stored only with "Nhớ trên thiết bị này"). */
 export const CLIPBOARD_STORAGE_KEY = 'uvweb.clipboard';
+/** Remembered computer-audio volume (0.25 | 0.5 | 0.75 | 1; stored only with "Nhớ trên thiết bị này"). */
+export const AUDIO_VOLUME_STORAGE_KEY = 'uvweb.audioVolume';
+const AUDIO_SUSPENDED_NOTICE = 'Trình duyệt chưa cho phát âm thanh — bấm Âm thanh lần nữa';
 const OVERFLOW_NOTICE = 'Hàng đợi chuột/bàn phím bị đầy: đã thả mọi phím và nút, Điều khiển đã tắt. Bật lại để tiếp tục.';
 
 const LAYOUT = `
@@ -173,12 +189,34 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
   };
   remember.addEventListener('change', persistClipboard);
 
+  // Computer-audio volume: remembered on the device only with "Nhớ trên thiết bị này".
+  let audioVolume: AudioVolume = (() => {
+    const v = Number(readStorage(() => localStorage, AUDIO_VOLUME_STORAGE_KEY));
+    return AUDIO_VOLUMES.find((x) => x === v) ?? 1;
+  })();
+  const persistAudioVolume = () => {
+    try {
+      if (remember.checked) localStorage.setItem(AUDIO_VOLUME_STORAGE_KEY, String(audioVolume));
+      else localStorage.removeItem(AUDIO_VOLUME_STORAGE_KEY);
+    } catch {
+      // Blocked storage: the choice lives in this tab only.
+    }
+  };
+  remember.addEventListener('change', persistAudioVolume);
+
   // --- session state ------------------------------------------------------------------------
   let session: ViewerSession | null = null;
   let peer: Peer | null = null;
   let controlOn = true;
   let controlAllowed = false;
   let overflowNotice = false;
+  // Computer audio: `audioOn` = the toggle (start requested), `audioLive` = the player runs and
+  // command 46 was sent (or is being sent). `audioGen` invalidates a start that finished after a stop/close.
+  let audioPlayer: AudioPlayerLike | null = null;
+  let audioOn = false;
+  let audioLive = false;
+  let audioGen = 0;
+  let audioNotice = '';
   let selectedMonitor = 0;
   let startedAt = 0;
   let clock: ReturnType<typeof setInterval> | null = null;
@@ -359,6 +397,14 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
         applyClipboard(true);
         focusUnlessTouch();
       },
+      // start() must run synchronously inside this click (Safari/iOS only unlock audio in the gesture).
+      audio: (on) => (on ? startAudio() : stopAudio(true)),
+      audioVolume: (volume) => {
+        audioVolume = volume;
+        audioPlayer?.setVolume(volume);
+        persistAudioVolume();
+        focusUnlessTouch();
+      },
       fullscreen: () => toggleFullscreen(),
       refresh: () => {
         session?.refreshScreen().catch((e: unknown) => log(`Làm mới lỗi: ${describe(e)}`));
@@ -447,15 +493,73 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     const active = peer !== null && controlOn && controlAllowed;
     input.setEnabled(active);
     toolbar.setState({ controlOn, controlAllowed, controlActive: active, keyboard: peer?.supportsBinaryKeyboard ?? false });
+    refreshAudio();
     const notices: string[] = [];
     if (peer && !controlAllowed) notices.push(VIEW_ONLY_NOTICE);
     if (peer && !peer.supportsBinaryKeyboard) notices.push(OLD_PEER_NOTICE);
     if (overflowNotice) notices.push(OVERFLOW_NOTICE);
+    if (audioNotice) notices.push(audioNotice);
     noticeEl.textContent = notices.join(' · ');
     noticeEl.hidden = notices.length === 0;
     // The browser cursor is hidden (cursor:none) only while controlling AND a remote shape is known.
     controlActive = active;
     updateControlling();
+  }
+
+  function refreshAudio(): void {
+    toolbar.setAudio({ on: audioOn, available: peer !== null, volume: audioVolume });
+  }
+
+  function startAudio(): void {
+    const current = session;
+    if (!current || !peer) return;
+    const gen = ++audioGen;
+    audioOn = true;
+    audioLive = false;
+    audioNotice = '';
+    audioPlayer ??= deps.createAudioPlayer?.() ?? new AudioPlayer();
+    const player = audioPlayer;
+    player.setVolume(audioVolume);
+    let started: Promise<void>;
+    try {
+      started = player.start(); // first thing, synchronously: still inside the click
+    } catch (e) {
+      started = Promise.reject(e);
+    }
+    refreshControl();
+    focusUnlessTouch();
+    void started
+      .then(() => {
+        if (gen !== audioGen || session !== current) return;
+        audioLive = true; // before the command: audio may arrive as soon as it is sent
+        return current.setComputerAudio(true);
+      })
+      .catch((e: unknown) => {
+        if (gen !== audioGen) return;
+        failAudio(e);
+      });
+  }
+
+  /** Audio is switched off after an error: player stopped, toggle off, the reason shown. */
+  function failAudio(e: unknown): void {
+    const suspended = e instanceof AudioPlayerError && e.code === 'suspended';
+    const notice = suspended ? AUDIO_SUSPENDED_NOTICE : `Âm thanh máy tính đã dừng: ${describe(e)}`;
+    log(notice);
+    stopAudio(false, notice); // the failed command (or a dead session) needs no 46|||0
+  }
+
+  /** `tell`: also send command 46 (not after the session closed). */
+  function stopAudio(tell: boolean, notice = ''): void {
+    const wasLive = audioLive;
+    audioGen++;
+    audioOn = false;
+    audioLive = false;
+    audioNotice = notice;
+    audioPlayer?.stop();
+    if (tell && wasLive && session && session.phase === 'active') {
+      session.setComputerAudio(false).catch((e: unknown) => log(`Tắt âm thanh lỗi: ${describe(e)}`));
+    }
+    refreshControl();
   }
 
   function cropFor(index: number): Crop | null {
@@ -546,6 +650,12 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     }
     setStatus(`Đã kết nối${next.displayName ? ` tới ${next.displayName}` : ''} (${next.width}×${next.height}, UltraViewer ${next.version})`);
     refreshControl();
+    // A refresh (or host command 23) re-initializes the host: ask for the audio again.
+    if (!first && audioLive) {
+      current.setComputerAudio(true).catch((e: unknown) => {
+        if (session === current && audioLive) failAudio(e);
+      });
+    }
   }
 
   function onClosed(reason: keyof typeof REASONS | null): void {
@@ -560,7 +670,7 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     peer = null;
     controlAllowed = false;
     overflowNotice = false;
-    refreshControl();
+    stopAudio(false); // refreshes the toolbar and notices
     chatPanel.reset();
     clipboardSync.reset();
     fileTransfers.reset();
@@ -610,6 +720,7 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     controlOn = true;
     overflowNotice = false;
     selectedMonitor = 0;
+    stopAudio(false);
     toolbar.reset();
     chatPanel.reset();
     clipboardSync.reset();
@@ -661,6 +772,9 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
             case 'file':
               fileTransfers.handle(e.event);
               break;
+            case 'audio':
+              if (audioLive) audioPlayer?.push(e.pcm);
+              break;
             case 'tools':
               setTools(e.available);
               break;
@@ -710,6 +824,8 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
       touch.detach();
       window.removeEventListener('blur', onWindowBlur);
       dropHeldPosition();
+      audioGen++;
+      audioPlayer?.stop();
       document.removeEventListener('pointerdown', onAnyPointerDown, true);
       input.detach();
       resizeObserver?.disconnect();

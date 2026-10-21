@@ -37,4 +37,13 @@ describe.skipIf(!existsSync(join(outDir, 'index.html')))('build output', () => {
     expect(files.filter((f) => /^assets\/zstd-[^/]+\.wasm$/.test(f))).toHaveLength(1);
     expect(files.filter((f) => /^assets\/8bit-[^/]+\.dat$/.test(f))).toHaveLength(1);
   });
+
+  test('emits the audio worklet module and the g722 wasm as assets, none starting with _', () => {
+    const files = walk(outDir);
+    expect(files.filter((f) => /^assets\/g722-[^/]+\.wasm$/.test(f))).toHaveLength(1);
+    const worklets = files.filter((f) => /^assets\/audio-worklet-[^/]+\.js$/.test(f));
+    expect(worklets).toHaveLength(1);
+    expect(read(worklets[0]!)).toContain('registerProcessor');
+    expect(files.filter((f) => f.split('/').some((s) => s.startsWith('_')))).toEqual([]);
+  });
 });

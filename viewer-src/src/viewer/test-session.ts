@@ -36,6 +36,10 @@ export class TestSession implements ViewerSession {
   readonly chats: string[] = [];
   readonly typings: boolean[] = [];
   readonly sharing: boolean[] = [];
+  /** Every setComputerAudio call (the argument), in order. */
+  readonly audio: boolean[] = [];
+  /** Set to make the next setComputerAudio reject. */
+  failAudio: Error | null = null;
   refreshes = 0;
   closedAt = -1;
   options: ConnectOptions | null = null;
@@ -99,6 +103,16 @@ export class TestSession implements ViewerSession {
     if (!this.tools) throw new RelaySessionError('toolsUnavailable');
     this.clipboardAllowed = on;
     this.sharing.push(on);
+  }
+
+  async setComputerAudio(on: boolean): Promise<void> {
+    if (this.phase !== 'active') throw new RelaySessionError('notConnected');
+    this.audio.push(on);
+    if (this.failAudio) {
+      const e = this.failAudio;
+      this.failAudio = null;
+      throw e;
+    }
   }
 
   async sendClipboard(text: string): Promise<void> {

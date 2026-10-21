@@ -69,7 +69,7 @@ export class AudioPlayer {
     return starting;
   }
 
-  /** Queue interleaved L,R Int16 samples. Ignored while stopped. */
+  /** Queue interleaved L,R Int16 samples. Ignored while stopped or while the context is not running. */
   push(pcm: Int16Array): void {
     this.post({ type: 'pcm', pcm });
   }
@@ -101,6 +101,7 @@ export class AudioPlayer {
   }
 
   private post(message: WorkletMessage): void {
+    if (this.context?.state !== 'running') return;
     this.node?.port.postMessage(message);
   }
 
