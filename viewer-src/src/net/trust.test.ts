@@ -20,6 +20,13 @@ describe('checkServerChain (brief)', () => {
     expect(checkServerChain(chain, 'a.b.ultraviewer.net', new Date())).toEqual({ ok: false, reason: 'name' }));
   test('rejects chain without its intermediates', () =>
     expect(checkServerChain([leaf], 'functions3.ultraviewer.net', new Date())).toEqual({ ok: false, reason: 'untrusted' }));
+  test('accepts a leaf-only relay through the bundled DV R36 intermediate', () => {
+    const [leafOnly] = pemChain('fixtures/relay-leaf-only-2026-11.pem') as [Uint8Array];
+    const name = 'functions3.ultraviewer.net';
+    const now = new Date('2026-10-21');
+    expect(checkServerChain([leafOnly], name, now)).toEqual({ ok: true, expired: false });
+    expect(checkServerChainWith([leafOnly], name, now, defaultAnchors())).toEqual({ ok: false, reason: 'untrusted' });
+  });
   test('rejects self-signed leaf', () =>
     expect(checkServerChain([selfSignedFor('*.ultraviewer.net')], 'functions3.ultraviewer.net', new Date()).ok).toBe(false));
 });

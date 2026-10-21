@@ -7,6 +7,7 @@ import { binaryToBytes, bytesToBinary } from './binary';
 import aaaPem from '../../fixtures/roots/aaa-certificate-services.pem?raw';
 import r46Pem from '../../fixtures/roots/sectigo-r46.pem?raw';
 import usertrustPem from '../../fixtures/roots/usertrust-rsa.pem?raw';
+import dvR36Pem from '../../fixtures/intermediates/sectigo-dv-r36.pem?raw';
 
 export type ChainCheck = { ok: true; expired: boolean } | { ok: false; reason: 'untrusted' | 'name' | 'parse' };
 
@@ -36,22 +37,38 @@ export function defaultAnchors(): Uint8Array[] {
   return anchorsCache;
 }
 
-export function checkServerChain(chainDer: Uint8Array[], certName: string, now: Date): ChainCheck {
-  return checkServerChainWith(chainDer, certName, now, defaultAnchors());
+let intermediatesCache: Uint8Array[] | null = null;
+
+/**
+ * Intermediates offered for path building but never trusted on their own. Some relays
+ * (45.124.95.190, seen 2026-10-21) send only the leaf; macOS fills the gap via AIA fetching,
+ * which a browser page cannot do, so the issuer they need is bundled here.
+ */
+export function defaultIntermediates(): Uint8Array[] {
+  intermediatesCache ??= pemToDer(dvR36Pem);
+  return intermediatesCache;
 }
 
-/** `checkServerChain` with explicit anchors (DER). `now` only decides `expired`. */
+export function checkServerChain(chainDer: Uint8Array[], certName: string, now: Date): ChainCheck {
+  return checkServerChainWith(chainDer, certName, now, defaultAnchors(), defaultIntermediates());
+}
+
+/**
+ * `checkServerChain` with explicit anchors (DER). `extraDer` are untrusted intermediates used
+ * like served ones. `now` only decides `expired`.
+ */
 export function checkServerChainWith(
   chainDer: Uint8Array[],
   certName: string,
   now: Date,
   anchorsDer: Uint8Array[],
+  extraDer: Uint8Array[] = [],
 ): ChainCheck {
   const [leafDer, ...restDer] = chainDer;
   const leaf = leafDer === undefined ? null : parse(leafDer);
   if (leaf === null) return { ok: false, reason: 'parse' };
   // Extra certificates that cannot be parsed (e.g. a non-RSA key forge cannot read) are just unusable.
-  const served = restDer.map(parse).filter((p): p is Parsed => p !== null);
+  const served = [...restDer, ...extraDer].map(parse).filter((p): p is Parsed => p !== null);
   const anchors = anchorsDer.map(parse).filter((p): p is Parsed => p !== null);
 
   if (!leafAllowsServerAuth(leaf.cert)) return { ok: false, reason: 'untrusted' };
