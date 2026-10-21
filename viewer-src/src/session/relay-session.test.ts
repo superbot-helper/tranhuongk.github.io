@@ -12,8 +12,12 @@ import { ModernScreenRenderer } from '../proto/screen-renderer';
 import { ModernScreenMessageError } from '../proto/screen-message';
 import { rawScreenZstd, screenLong, screenParts, screenWords } from '../proto/screen-test-utils';
 import { concat, enc, u8 } from '../proto/test-utils';
+import { utf16le } from '../proto/utf16';
+import { rawZstdFrame } from '../proto/clipboard';
+import { readFileSync } from 'node:fs';
+import type { PcmDecoder } from './control';
 import type { ClientIdentity } from './identity';
-import { COMMAND_ATTEMPT_MS, RelaySession, type SessionEvent } from './relay-session';
+import { COMMAND_ATTEMPT_MS, RelaySession, type RelaySessionDeps, type SessionEvent } from './relay-session';
 
 // Synthetic values; the secrecy test asserts none of them reaches any emitted string.
 const SENTINEL_PASSWORD = 'SENTINEL-partner-secret-7f3a';
@@ -123,6 +127,7 @@ interface WorldOptions {
   autoPong?: boolean;
   openChannel?: (ip: string, certName: string, signal?: AbortSignal) => Promise<ByteChannel>;
   ips?: string[];
+  deps?: Partial<RelaySessionDeps>;
 }
 
 class World {
@@ -145,6 +150,7 @@ class World {
       },
       resolve: async (host) => (host === COMMAND_HOST ? (o.ips ?? COMMAND_IPS) : []),
       now: () => Date.now(),
+      ...o.deps,
     });
   }
 
@@ -530,8 +536,8 @@ describe('RelaySession', () => {
     const w = new World({ sendFrameAfter17: false });
     w.connect();
     await waitFor(() => w.session.phase === 'active');
-    w.peer!.deliver(fromPartner(encodeMultipart([u8(12), u8(1, 2, 3)])));
-    w.peer!.deliver(fromPartner(encodeMultipart([u8(12), u8(4)])));
+    w.peer!.deliver(fromPartner(encodeMultipart([u8(60), u8(1, 2, 3)])));
+    w.peer!.deliver(fromPartner(encodeMultipart([u8(60), u8(4)])));
     w.peer!.deliver(fromPartner(encodeMultipart([u8(26), enc('not-our-hash')])));
     w.peer!.deliver(fromPartner(encodeMultipart([u8(1)]), '192.0.2.200', 1));
     w.peer!.deliver(fromPartner(encodeMultipart([u8(26)]), '192.0.2.200', 1));
@@ -539,7 +545,7 @@ describe('RelaySession', () => {
     w.peer!.deliver(fromPartner(encodeMultipart([u8(1)]), '192.0.2.200', 1));
     await waitFor(() => w.session.diagnostics.ignoredSources === 4);
     const ignored = w.statuses().filter((s) => s.startsWith('ignored'));
-    expect(ignored).toEqual(['ignored 12', 'ignored 26']);
+    expect(ignored).toEqual(['ignored 60', 'ignored 26']);
     expect(w.session.diagnostics.ignoredMessages).toBe(3);
     // Each distinct foreign addr:port is logged once (relay switch / stray sender is visible).
     expect(w.statuses().filter((s) => s.startsWith('nguồn lạ'))).toEqual(['nguồn lạ 192.0.2.200:1', 'nguồn lạ 192.0.2.200:2']);
@@ -995,5 +1001,358 @@ describe('RelaySession control', () => {
       expect(w.closedEvent()).toBeUndefined();
       w.session.close();
     });
+  });
+});
+
+// Phase 2 Task 3: chat 12/29/30, clipboard 5/33, computer audio 42/43 and the tool gate.
+describe('RelaySession tools', () => {
+  const unicode = (t: string) => utf16le(t);
+  const chatEvents = (w: World) => w.events.flatMap((e) => (e.type === 'chat' ? [e.text] : []));
+  const typingEvents = (w: World) => w.events.flatMap((e) => (e.type === 'typing' ? [e.typing] : []));
+  const clipboardEvents = (w: World) => w.events.flatMap((e) => (e.type === 'clipboard' ? [e.text] : []));
+  const audioEvents = (w: World) => w.events.flatMap((e) => (e.type === 'audio' ? [e.pcm] : []));
+  const toolsEvents = (w: World) => w.events.flatMap((e) => (e.type === 'tools' ? [e.available] : []));
+  const long = (n: number) => u8(n & 255, (n >> 8) & 255, (n >> 16) & 255, (n >>> 24) & 255);
+  const deliver = (w: World, parts: Uint8Array[]) => w.peer!.deliver(fromPartner(encodeMultipart(parts)));
+  const NAUDIO = (JSON.parse(readFileSync(new URL('../../test/fixtures/g722-windows.json', import.meta.url), 'utf8')) as {
+    Fixtures: { EncodedBase64: string; PCMBase64: string }[];
+  }).Fixtures[0]!;
+  const b64 = (s: string) => new Uint8Array(Buffer.from(s, 'base64'));
+  const toInt16 = (bytes: Uint8Array) => new Int16Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.length));
+
+  async function activeWorld(o: WorldOptions = {}): Promise<World> {
+    const w = new World({ sendFrameAfter17: false, ...o });
+    w.connect();
+    await waitFor(() => w.session.phase === 'active' && w.peerTexts.includes('28|||1'));
+    return w;
+  }
+
+  test('gate: nothing is usable before accepted; tools events follow the gate; everything resets on close', async () => {
+    const w = new World({ initParts: null, sendFrameAfter17: false });
+    expect(w.session.canUseSessionTools()).toBe(false);
+    w.connect();
+    await waitFor(() => w.peerTexts.some((t) => t.startsWith('login:')));
+    expect(w.session.phase).toBe('login');
+    expect(w.session.canUseSessionTools()).toBe(false);
+    await expect(w.session.sendChat('hi')).rejects.toMatchObject({ name: 'RelaySessionError', code: 'toolsUnavailable' });
+    await expect(w.session.sendTyping(true)).rejects.toMatchObject({ code: 'toolsUnavailable' });
+    await expect(w.session.sendClipboard('x')).rejects.toMatchObject({ code: 'toolsUnavailable' });
+    expect(() => w.session.setClipboardSharing(true)).toThrowError(expect.objectContaining({ code: 'toolsUnavailable' }));
+    await expect(w.session.setComputerAudio(true)).rejects.toMatchObject({ code: 'notConnected' });
+    // Incoming tool messages before the first init are dropped too.
+    deliver(w, [u8(12, 0), unicode('early')]);
+    deliver(w, [u8(29, 0)]);
+    deliver(w, INIT_PARTS());
+    await waitFor(() => w.session.phase === 'active');
+    expect(chatEvents(w)).toEqual([]);
+    expect(typingEvents(w)).toEqual([]);
+    expect(toolsEvents(w)).toEqual([true]);
+    expect(w.session.canUseSessionTools()).toBe(true);
+    // `tools` follows `accepted`.
+    expect(w.events.findIndex((e) => e.type === 'tools')).toBeGreaterThan(w.events.findIndex((e) => e.type === 'accepted'));
+    w.session.close();
+    expect(w.session.canUseSessionTools()).toBe(false);
+    expect(toolsEvents(w)).toEqual([true, false]);
+    expect(w.events.findIndex((e) => e.type === 'tools' && !e.available)).toBeLessThan(w.events.findIndex((e) => e.type === 'closed'));
+    await expect(w.session.sendChat('late')).rejects.toMatchObject({ code: 'toolsUnavailable' });
+  });
+
+  test('gate: the tools stay available during a host re-login (23) and a screen refresh', async () => {
+    const w = await activeWorld();
+    deliver(w, [u8(23)]);
+    await waitFor(() => w.session.phase === 'login' || logins(w).length === 2);
+    await w.session.sendChat('still here');
+    expect(w.peerForwards.at(-1)).toEqual({ formatFlag: true, payload: unicode('12|||still here') });
+    await waitFor(() => w.session.phase === 'active');
+    expect(toolsEvents(w)).toEqual([true]);
+    await w.session.refreshScreen();
+    expect(w.session.phase).toBe('login');
+    expect(w.session.canUseSessionTools()).toBe(true);
+    await w.session.sendTyping(true);
+    expect(w.peerForwards.at(-1)).toEqual({ formatFlag: true, payload: unicode('29') });
+    expect(toolsEvents(w)).toEqual([true]);
+    w.session.close();
+  });
+  const logins = (w: World) => w.peerTexts.filter((t) => t.startsWith('login:'));
+
+  test('chat: sends UTF-16LE "12|||text" and typing "29"/"30" with flag true; local policy rejects', async () => {
+    const w = await activeWorld();
+    await w.session.sendChat('xin chào 😀');
+    expect(w.peerForwards.at(-1)).toEqual({ formatFlag: true, payload: unicode('12|||xin chào 😀') });
+    await w.session.sendTyping(true);
+    expect(w.peerForwards.at(-1)).toEqual({ formatFlag: true, payload: unicode('29') });
+    await w.session.sendTyping(false);
+    expect(w.peerForwards.at(-1)).toEqual({ formatFlag: true, payload: unicode('30') });
+    const sent = w.peerForwards.length;
+    await expect(w.session.sendChat('a|||b')).rejects.toMatchObject({ name: 'ChatError', code: 'unsupportedDelimiter' });
+    await expect(w.session.sendChat('a\u0001b')).rejects.toMatchObject({ code: 'invalidText' });
+    await expect(w.session.sendChat('x'.repeat(16 * 1024 + 1))).rejects.toMatchObject({ code: 'textTooLarge' });
+    expect(w.peerForwards.length).toBe(sent);
+    w.session.close();
+  });
+
+  test('chat: receives 12 (UTF-16LE) and 29/30, drops malformed chat, never logs the text', async () => {
+    const w = await activeWorld();
+    deliver(w, [u8(12, 0), unicode('Chào bạn 👋 SENTINELCHAT')]);
+    deliver(w, [u8(29, 0)]);
+    deliver(w, [u8(30)]); // one-byte command form
+    deliver(w, [u8(12, 0), u8(0x61)]); // odd UTF-16: dropped
+    deliver(w, [u8(12, 0), unicode('a\u0001')]); // control char: dropped
+    deliver(w, [u8(29, 0), u8(1)]); // typing with a body: dropped
+    deliver(w, [u8(12, 0), unicode('sau')]);
+    await waitFor(() => chatEvents(w).length === 2);
+    expect(chatEvents(w)).toEqual(['Chào bạn 👋 SENTINELCHAT', 'sau']);
+    expect(typingEvents(w)).toEqual([true, false]);
+    expect(w.closedEvent()).toBeUndefined();
+    expect(w.statuses().join('\n')).not.toContain('SENTINELCHAT');
+    expect(w.statuses().some((s) => /^ignored (12|29|30)$/.test(s))).toBe(false);
+    w.session.close();
+  });
+
+  test('chat does not depend on the control permission (49 view-only)', async () => {
+    const w = await activeWorld();
+    deliver(w, [u8(49), u8(1)]);
+    await waitFor(() => w.events.some((e) => e.type === 'inputPermission'));
+    await w.session.sendChat('view only');
+    expect(w.peerForwards.at(-1)).toEqual({ formatFlag: true, payload: unicode('12|||view only') });
+    deliver(w, [u8(12, 0), unicode('reply')]);
+    await waitFor(() => chatEvents(w).length === 1);
+    w.session.close();
+  });
+
+  test('clipboard: off by default — incoming 5/33 dropped silently, sending rejected, nothing sent on toggle', async () => {
+    const w = await activeWorld();
+    const sent = w.peerForwards.length;
+    deliver(w, [u8(5), unicode('SENTINELCLIP')]);
+    deliver(w, [u8(33), long(2), rawZstdFrame(unicode('a'))]);
+    await expect(w.session.sendClipboard('SENTINELCLIP')).rejects.toMatchObject({ name: 'RelaySessionError', code: 'clipboardDisabled' });
+    // Let the deliveries run (the next message in the queue is observed).
+    deliver(w, [u8(12, 0), unicode('marker')]);
+    await waitFor(() => chatEvents(w).length === 1);
+    expect(clipboardEvents(w)).toEqual([]);
+    expect(w.statuses().join('\n')).not.toContain('SENTINELCLIP');
+    expect(w.statuses().filter((s) => s === 'clipboard bị bỏ (đang tắt)')).toHaveLength(1);
+    expect(w.statuses().some((s) => /^ignored (5|33)$/.test(s))).toBe(false);
+    w.session.setClipboardSharing(true);
+    w.session.setClipboardSharing(false);
+    expect(w.peerForwards.length).toBe(sent);
+    w.session.close();
+  });
+
+  test('clipboard: on — modern 33 and legacy 5 emit events; malformed/oversized are dropped; sends the modern payload', async () => {
+    const w = await activeWorld();
+    w.session.setClipboardSharing(true);
+    const text = 'Dán: Δ 😀 | ||';
+    const utf16 = unicode(text);
+    deliver(w, [u8(33), long(utf16.length), rawZstdFrame(utf16)]);
+    deliver(w, [u8(5), unicode('legacy ✓')]);
+    deliver(w, [u8(33), long(utf16.length + 2), rawZstdFrame(utf16)]); // length mismatch
+    deliver(w, [u8(5), u8(0x61)]); // odd UTF-16
+    deliver(w, [u8(33), long(2), u8(1, 2, 3)]); // bad zstd
+    deliver(w, [u8(5), unicode('a\0b')]); // NUL
+    deliver(w, [u8(33), long(2 * 1024 * 1024)]); // over the limit, truncated
+    deliver(w, [u8(5), unicode('cuối')]);
+    await waitFor(() => clipboardEvents(w).length === 3);
+    expect(clipboardEvents(w)).toEqual([text, 'legacy ✓', 'cuối']);
+    expect(w.closedEvent()).toBeUndefined();
+
+    await w.session.sendClipboard('gửi đi');
+    const out = w.peerForwards.at(-1)!;
+    expect(out.formatFlag).toBe(false);
+    const body = unicode('gửi đi');
+    expect(out.payload).toEqual(concat(enc(`33|||${body.length}|||`), rawZstdFrame(body)));
+    await w.session.sendClipboard('');
+    expect(w.peerForwards.at(-1)).toEqual({ formatFlag: true, payload: unicode('5|||') });
+    await expect(w.session.sendClipboard('x'.repeat(524_289))).rejects.toMatchObject({ code: 'sizeLimitExceeded' });
+    w.session.close();
+  });
+
+  test('clipboard: turning sharing off rejects sends again; closing resets the flag', async () => {
+    const w = await activeWorld();
+    w.session.setClipboardSharing(true);
+    w.session.setClipboardSharing(false);
+    await expect(w.session.sendClipboard('x')).rejects.toMatchObject({ code: 'clipboardDisabled' });
+    w.session.setClipboardSharing(true);
+    const flags = () => w.session as unknown as { clipboardAllowed: boolean; audioEnabled: boolean };
+    await w.session.setComputerAudio(true);
+    expect([flags().clipboardAllowed, flags().audioEnabled]).toEqual([true, true]);
+    w.session.close();
+    expect([flags().clipboardAllowed, flags().audioEnabled]).toEqual([false, false]);
+  });
+
+  test('clipboard: a zstd decoder that cannot load drops the message and is logged once without text', async () => {
+    const w = await activeWorld({ deps: { makeClipboardZstd: () => Promise.reject(new Error('boom')) } });
+    w.session.setClipboardSharing(true);
+    const utf16 = unicode('SENTINELCLIP');
+    deliver(w, [u8(33), long(utf16.length), rawZstdFrame(utf16)]);
+    deliver(w, [u8(33), long(utf16.length), rawZstdFrame(utf16)]);
+    deliver(w, [u8(5), unicode('legacy ok')]);
+    await waitFor(() => clipboardEvents(w).length === 1);
+    expect(clipboardEvents(w)).toEqual(['legacy ok']);
+    expect(w.statuses().filter((s) => s.startsWith('Không tải được zstd cho clipboard'))).toHaveLength(1);
+    expect(w.statuses().join('\n')).not.toContain('SENTINELCLIP');
+    w.session.close();
+  });
+
+  test('audio: setComputerAudio sends UTF-16LE "46|||-1"/"46|||0" (flag true), active only', async () => {
+    const w = await activeWorld();
+    await w.session.setComputerAudio(true);
+    expect(w.peerForwards.at(-1)).toEqual({ formatFlag: true, payload: unicode('46|||-1') });
+    await w.session.setComputerAudio(false);
+    expect(w.peerForwards.at(-1)).toEqual({ formatFlag: true, payload: unicode('46|||0') });
+    // Not allowed while re-authenticating.
+    await w.session.refreshScreen();
+    await expect(w.session.setComputerAudio(true)).rejects.toMatchObject({ code: 'notConnected' });
+    w.session.close();
+    await expect(w.session.setComputerAudio(true)).rejects.toMatchObject({ code: 'notConnected' });
+  });
+
+  test('audio: 43 decodes the NAudio fixture packet by packet; 42 emits zero samples; muted (46 off) forwards nothing but keeps decoding', async () => {
+    const w = await activeWorld();
+    const encoded = b64(NAUDIO.EncodedBase64);
+    const expected = toInt16(b64(NAUDIO.PCMBase64));
+    const cut = Math.floor(encoded.length / 3);
+    const chunks = [encoded.subarray(0, cut), encoded.subarray(cut, 2 * cut), encoded.subarray(2 * cut)];
+    // Audio is off: the middle packet is decoded (state advances) but not forwarded.
+    await w.session.setComputerAudio(true);
+    deliver(w, [u8(43), chunks[0]!]);
+    await waitFor(() => audioEvents(w).length === 1);
+    await w.session.setComputerAudio(false);
+    deliver(w, [u8(43), chunks[1]!]);
+    deliver(w, [u8(42), long(1000)]); // silence is not forwarded while off
+    deliver(w, [u8(12, 0), unicode('marker')]); // everything above has been consumed once this arrives
+    await waitFor(() => chatEvents(w).length === 1);
+    await w.session.setComputerAudio(true);
+    deliver(w, [u8(42), long(16)]);
+    deliver(w, [u8(43), chunks[2]!]);
+    await waitFor(() => audioEvents(w).length === 3);
+    const [first, silence, last] = audioEvents(w);
+    expect(first).toEqual(expected.subarray(0, cut * 2));
+    expect(silence).toEqual(new Int16Array(8));
+    expect(last).toEqual(expected.subarray(4 * cut));
+    expect(w.closedEvent()).toBeUndefined();
+    w.session.close();
+  });
+
+  test('audio: 42/43 outside active, malformed and oversized packets are dropped', async () => {
+    const w = await activeWorld();
+    await w.session.setComputerAudio(true);
+    deliver(w, [u8(42)]); // no body
+    deliver(w, [u8(42), u8(1, 2)]); // short count
+    deliver(w, [u8(42), long(262_145)]); // over the limit
+    deliver(w, [u8(42), long(-4)]);
+    deliver(w, [u8(43), new Uint8Array(64 * 1024 + 1)]);
+    deliver(w, [u8(42), long(0)]);
+    await waitFor(() => audioEvents(w).length === 1);
+    expect(audioEvents(w)).toEqual([new Int16Array(0)]);
+    expect(w.closedEvent()).toBeUndefined();
+    expect(w.statuses().some((s) => /^ignored (42|43)$/.test(s))).toBe(false);
+    // During a screen refresh the phase is login: audio is not forwarded (the fake host stays silent).
+    w.o.initParts = null;
+    await w.session.refreshScreen();
+    deliver(w, [u8(42), long(8)]);
+    deliver(w, [u8(12, 0), unicode('marker')]);
+    await waitFor(() => chatEvents(w).length === 1);
+    expect(audioEvents(w)).toHaveLength(1);
+    w.session.close();
+  });
+
+  test('audio: decoder is created lazily on the first 43, packets queued during load keep order, disposed on close', async () => {
+    let release!: (d: PcmDecoder) => void;
+    let created = 0;
+    const decoded: number[] = [];
+    let disposed = 0;
+    const fake: PcmDecoder = {
+      decode: (e) => {
+        decoded.push(e[0]!);
+        return Int16Array.of(e[0]!, -e[0]!);
+      },
+      dispose: () => void disposed++,
+    };
+    const w = await activeWorld({
+      deps: { makeG722Decoder: () => (created++, new Promise<PcmDecoder>((r) => { release = r; })) },
+    });
+    await w.session.setComputerAudio(true);
+    deliver(w, [u8(42), long(4)]);
+    await waitFor(() => audioEvents(w).length === 1);
+    expect(created).toBe(0); // silence does not need the decoder
+    deliver(w, [u8(43), u8(1)]);
+    deliver(w, [u8(43), u8(2)]);
+    deliver(w, [u8(43), u8(3)]);
+    await waitFor(() => created === 1);
+    deliver(w, [u8(12, 0), unicode('marker')]);
+    await waitFor(() => chatEvents(w).length === 1);
+    expect(decoded).toEqual([]);
+    release(fake);
+    await waitFor(() => audioEvents(w).length === 4);
+    expect(decoded).toEqual([1, 2, 3]);
+    expect(audioEvents(w).slice(1)).toEqual([Int16Array.of(1, -1), Int16Array.of(2, -2), Int16Array.of(3, -3)]);
+    deliver(w, [u8(43), u8(4)]);
+    await waitFor(() => audioEvents(w).length === 5);
+    expect(created).toBe(1);
+    expect(disposed).toBe(0);
+    w.session.close();
+    expect(disposed).toBe(1);
+  });
+
+  test('audio: packets that arrive while the decoder loads are capped at the newest 250 ms (12,000 bytes)', async () => {
+    let release!: (d: PcmDecoder) => void;
+    const decoded: number[] = [];
+    const fake: PcmDecoder = { decode: (e) => (decoded.push(e.length), new Int16Array(e.length * 2)), dispose: () => {} };
+    const w = await activeWorld({ deps: { makeG722Decoder: () => new Promise<PcmDecoder>((r) => { release = r; }) } });
+    await w.session.setComputerAudio(true);
+    for (const size of [5000, 5000, 5000, 5000]) deliver(w, [u8(43), new Uint8Array(size).fill(1)]);
+    deliver(w, [u8(12, 0), unicode('marker')]);
+    await waitFor(() => chatEvents(w).length === 1);
+    release(fake);
+    await waitFor(() => audioEvents(w).length === 2);
+    expect(decoded).toEqual([5000, 5000]); // oldest two dropped: 10,000 <= 12,000 < 15,000
+    w.session.close();
+  });
+
+  test('audio: a decoder created after the session closed is disposed at once', async () => {
+    let release!: (d: PcmDecoder) => void;
+    let disposed = 0;
+    const w = await activeWorld({ deps: { makeG722Decoder: () => new Promise<PcmDecoder>((r) => { release = r; }) } });
+    await w.session.setComputerAudio(true);
+    deliver(w, [u8(43), u8(1)]);
+    await waitFor(() => typeof release === 'function');
+    w.session.close();
+    release({ decode: () => new Int16Array(2), dispose: () => void disposed++ });
+    await waitFor(() => disposed === 1);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(audioEvents(w)).toEqual([]);
+  });
+
+  test('audio: a decoder that fails to load is logged once, audio is dropped, the session stays up', async () => {
+    let calls = 0;
+    const w = await activeWorld({ deps: { makeG722Decoder: () => (calls++, Promise.reject(new Error('wasm bad'))) } });
+    await w.session.setComputerAudio(true);
+    deliver(w, [u8(43), u8(1)]);
+    await waitFor(() => w.statuses().some((s) => s.startsWith('Không tải được bộ giải mã âm thanh')));
+    deliver(w, [u8(43), u8(2)]);
+    deliver(w, [u8(42), long(4)]); // silence still flows
+    deliver(w, [u8(12, 0), unicode('marker')]);
+    await waitFor(() => chatEvents(w).length === 1);
+    expect(calls).toBe(1);
+    expect(w.statuses().filter((s) => s.startsWith('Không tải được bộ giải mã âm thanh'))).toHaveLength(1);
+    expect(audioEvents(w)).toEqual([new Int16Array(2)]);
+    expect(w.closedEvent()).toBeUndefined();
+    w.session.close();
+  });
+
+  test('secrecy: chat, clipboard text and audio never reach a status string', async () => {
+    const w = await activeWorld();
+    w.session.setClipboardSharing(true);
+    await w.session.sendChat('SENTINELCHATOUT');
+    await w.session.sendClipboard('SENTINELCLIPOUT');
+    deliver(w, [u8(12, 0), unicode('SENTINELCHATIN')]);
+    const utf16 = unicode('SENTINELCLIPIN');
+    deliver(w, [u8(33), long(utf16.length), rawZstdFrame(utf16)]);
+    await waitFor(() => clipboardEvents(w).length === 1 && chatEvents(w).length === 1);
+    const log = w.statuses().join('\n');
+    for (const secret of ['SENTINELCHATOUT', 'SENTINELCLIPOUT', 'SENTINELCHATIN', 'SENTINELCLIPIN']) expect(log).not.toContain(secret);
+    expect(log).toContain('nhận tin nhắn chat');
+    w.session.close();
   });
 });

@@ -7,9 +7,11 @@
 // tile-size change 48), partner end/block (27/41/54, 39), heartbeats, deadline and close
 // handling. Phase 1 adds the control API (send 217-224, sendCommand 261-265, refreshScreen
 // 226-238), cursor 3/4/28 (716-718), host re-login 23 (828-832) and input permission 49
-// (848-853); pure helpers live in ./control. No LAN direct, files, chat, clipboard or audio:
-// every other application id (including 26, no relay retargeting) is logged once as
-// `ignored <id>` and dropped.
+// (848-853); pure helpers live in ./control. Phase 2 adds chat 12/29/30, clipboard 5/33 (opt-in,
+// off by default) and computer audio 42/43 (G.722 decoded to PCM events) behind the Swift
+// `canUseSessionTools` gate (peerAccepted && phase in {active, login}); audio needs `active`.
+// No LAN direct or files yet: every other application id (including 26, no relay retargeting)
+// is logged once as `ignored <id>` and dropped.
 //
 // Web additions (no Swift equivalent): the command host is resolved over DoH and its IPv4
 // addresses are tried in order (RelayCommandConnection, 3 s each); a liveness watchdog
@@ -19,11 +21,14 @@
 // ping and starts the 8 s window from then.
 //
 // Secrets: the partner password, its MD5 proofs, the client password and the Worker token
-// never appear in a status string or an error detail.
+// never appear in a status string or an error detail; neither does chat or clipboard text.
 import { DnsError } from '../net/dns';
 import { PipeError } from '../net/pipe';
 import { TlsError, type ByteChannel } from '../net/tls';
+import { G722Decoder } from '../codec/g722-decoder';
 import { loadScreenDictionary } from '../codec/screen-dictionary';
+import { chatMessagePayload, chatTypingPayload } from '../proto/chat';
+import { clipboardPayload, makeClipboardZstd, type ClipboardZstd } from '../proto/clipboard';
 import { commandPayload, type RemoteCommand, type RemoteMonitor } from '../proto/commands';
 import { makeCursorZstd, type CursorEvent, type CursorZstd } from '../proto/cursor';
 import { CLIENT_VERSION, LOGIN_DEFAULTS, LOOKUP_DEFAULTS, makeRegistrationRequest } from '../proto/client-defaults';
@@ -39,7 +44,10 @@ import { decodeMultipart } from '../proto/multipart';
 import { parseRegistrationReply, registrationEnvelope, type RegistrationReply } from '../proto/registration';
 import { decodeFrameMessage, decodeInitialization, ModernScreenMessageError } from '../proto/screen-message';
 import { ModernScreenRenderer, type JpegDecoder, type ScreenBitmap } from '../proto/screen-renderer';
-import { BINARY_KEYBOARD_VERSION, decodeCursor, initMonitors, versionAtLeast, viewOnlyFlag } from './control';
+import {
+  BINARY_KEYBOARD_VERSION, canUseTools, decodeAudio, decodeChatMessage, decodeClipboardMessage, decodeCursor,
+  initMonitors, SessionAudioDecoder, versionAtLeast, viewOnlyFlag, type PcmDecoder,
+} from './control';
 import type { ClientIdentity } from './identity';
 
 export { versionAtLeast } from './control';
@@ -103,6 +111,16 @@ export type SessionEvent =
   | { type: 'inputPermission'; allowed: boolean }
   /** Commands 3/4/28 while active. A `select` of an unknown hash: send(cursorShapeRequest(hash)). */
   | { type: 'cursor'; event: CursorEvent }
+  /** Command 12 while the tool gate is open. The text is never logged. */
+  | { type: 'chat'; text: string }
+  /** Commands 29/30 while the tool gate is open. */
+  | { type: 'typing'; typing: boolean }
+  /** Commands 5/33 while clipboard sharing is on. The text is never logged. */
+  | { type: 'clipboard'; text: string }
+  /** Commands 42/43 while active and computer audio is on: interleaved 48 kHz stereo Int16. */
+  | { type: 'audio'; pcm: Int16Array }
+  /** `canUseSessionTools()` changed: true at the first accepted init, false when the session ends. */
+  | { type: 'tools'; available: boolean }
   | { type: 'closed'; reason: SessionFailure | null };
 
 export type SessionPhase = 'closed' | 'registering' | 'lookup' | 'login' | 'active';
@@ -123,6 +141,10 @@ export interface RelaySessionDeps {
   decodeJpeg?: JpegDecoder;
   /** Defaults to a dictionary-free zstd decoder for cursor shapes (created on the first command 4). */
   makeCursorZstd?: () => Promise<CursorZstd>;
+  /** Defaults to a dictionary-free zstd decoder for clipboard text (created on the first command 33). */
+  makeClipboardZstd?: () => Promise<ClipboardZstd>;
+  /** Defaults to the G.722 wasm decoder (created on the first command 43). */
+  makeG722Decoder?: () => Promise<PcmDecoder>;
 }
 
 export interface ConnectOptions {
@@ -169,7 +191,7 @@ function freshDiagnostics(): SessionDiagnostics {
 
 /** Swift Failure cases thrown by the public API (connect / send / sendCommand / refreshScreen). */
 export class RelaySessionError extends Error {
-  readonly code: 'alreadyOpen' | 'invalidPartner' | 'notConnected' | 'viewOnly';
+  readonly code: 'alreadyOpen' | 'invalidPartner' | 'notConnected' | 'viewOnly' | 'toolsUnavailable' | 'clipboardDisabled';
   constructor(code: RelaySessionError['code']) {
     super(code);
     this.name = 'RelaySessionError';
@@ -357,6 +379,15 @@ export class RelaySession {
   private renderer: ModernScreenRenderer | null = null;
   private dictionary: Promise<Uint8Array | null> | null = null;
   private cursorZstd: Promise<CursorZstd> | null = null;
+  private clipboardZstd: Promise<ClipboardZstd> | null = null;
+  /** Swift clipboardAllowed: one opt-in flag for both directions; off by default and per session. */
+  private clipboardAllowed = false;
+  /** Swift audioEnabled: the host was asked for computer audio (46). */
+  private audioEnabled = false;
+  private audio: SessionAudioDecoder | null = null;
+  private toolsAvailable = false;
+  private clipboardDropLogged = false;
+  private clipboardZstdErrorLogged = false;
   /** Swift remoteViewOnly: the last command 49 flag (any phase); reset per connection. */
   private remoteViewOnly = false;
   private monitorErrorLogged = false;
@@ -393,6 +424,11 @@ export class RelaySession {
     this.heartbeatTicks = 0;
     this.remoteViewOnly = false;
     this.monitorErrorLogged = false;
+    this.clipboardAllowed = false;
+    this.audioEnabled = false;
+    this.toolsAvailable = false;
+    this.clipboardDropLogged = false;
+    this.clipboardZstdErrorLogged = false;
     this.relayAnswersPings = false;
     this.relayPingStarted = null;
     this.peerPingStarted = null;
@@ -419,6 +455,70 @@ export class RelaySession {
     if (this.state !== 'active' || this.peer === null) throw new RelaySessionError('notConnected');
     if (opts.requiresControl && this.remoteViewOnly) throw new RelaySessionError('viewOnly');
     for (const m of commandPayload(c)) this.sendToPeer(m.bytes, m.formatFlag);
+  }
+
+  /** Swift `canUseSessionTools`: chat, typing and clipboard need an accepted peer, `active` or `login`. */
+  canUseSessionTools(): boolean {
+    return canUseTools(this.diag.peerAccepted, this.state);
+  }
+
+  /** Swift sendChat: UTF-16LE "12|||text" (ChatError when the text breaks the local policy). */
+  async sendChat(text: string): Promise<void> {
+    this.requireTools();
+    const m = chatMessagePayload(text);
+    this.sendToPeer(m.bytes, m.formatFlag);
+  }
+
+  /** Swift sendTyping: UTF-16LE "29" / "30". */
+  async sendTyping(typing: boolean): Promise<void> {
+    this.requireTools();
+    const m = chatTypingPayload(typing);
+    this.sendToPeer(m.bytes, m.formatFlag);
+  }
+
+  /**
+   * Swift setClipboardSharing: one opt-in flag for both directions (default off); nothing is
+   * sent to the host. Turning it off drops later incoming clipboard messages silently.
+   */
+  setClipboardSharing(on: boolean): void {
+    this.requireTools();
+    this.clipboardAllowed = on;
+  }
+
+  /** Swift sendClipboard: modern "33|||" payload (empty text: legacy "5|||"); only while sharing is on. */
+  async sendClipboard(text: string): Promise<void> {
+    this.requireTools();
+    if (!this.clipboardAllowed) throw new RelaySessionError('clipboardDisabled');
+    const m = clipboardPayload(text);
+    this.sendToPeer(m.bytes, m.formatFlag);
+  }
+
+  /**
+   * Swift setComputerAudioEnabled: command 46, `active` only. Incoming audio is decoded either
+   * way (the G.722 predictor must stay in step) but only forwarded while this is on.
+   */
+  async setComputerAudio(on: boolean): Promise<void> {
+    if (this.state !== 'active' || this.peer === null) throw new RelaySessionError('notConnected');
+    const previous = this.audioEnabled;
+    this.audioEnabled = on;
+    try {
+      await this.sendCommand({ type: 'computerSound', enabled: on }, { requiresControl: false });
+    } catch (e) {
+      this.audioEnabled = previous;
+      throw e;
+    }
+  }
+
+  private requireTools(): void {
+    if (!this.canUseSessionTools()) throw new RelaySessionError('toolsUnavailable');
+  }
+
+  /** Emits `tools` when `canUseSessionTools()` changed since the last emission. */
+  private syncTools(): void {
+    const available = this.canUseSessionTools();
+    if (available === this.toolsAvailable) return;
+    this.toolsAvailable = available;
+    this.on({ type: 'tools', available });
   }
 
   /** Swift refreshScreen: renegotiate a complete screen; control is suspended until the init. */
@@ -700,6 +800,19 @@ export class RelaySession {
       case 28:
         await this.consumeCursor(parts, gen);
         return;
+      case 12:
+      case 29:
+      case 30:
+        this.consumeChat(parts);
+        return;
+      case 5:
+      case 33:
+        await this.consumeClipboard(parts, gen);
+        return;
+      case 42:
+      case 43:
+        this.consumeAudio(parts, gen);
+        return;
       case 23:
         // Swift 828-832: the host asks for a new Login; the screen stays (no clear).
         if (this.state !== 'active') return;
@@ -789,6 +902,7 @@ export class RelaySession {
     this.on({ type: 'accepted', peer });
     if (previouslyAccepted) this.status('Đã làm mới màn hình Windows');
     if (!this.live(gen) || this.state !== 'active') return;
+    this.syncTools();
     // TCP ConnectionType1: the viewer sends ASCII 17 after initialization.
     this.sendToPeer(ASCII.encode('17'));
     // MacViewer ConnectionModel sends cursorPositions(enabled:) once, on the first accept.
@@ -812,6 +926,70 @@ export class RelaySession {
       });
     }
     return this.cursorZstd;
+  }
+
+  /** consumeApplication cases 12, 29, 30 (tool gate; malformed chat is dropped). */
+  private consumeChat(parts: Uint8Array[]): void {
+    if (!this.canUseSessionTools()) return;
+    const event = decodeChatMessage(parts);
+    if (event === null) return;
+    if (event.type === 'message') {
+      this.status('nhận tin nhắn chat');
+      this.on({ type: 'chat', text: event.text });
+    } else {
+      this.on({ type: 'typing', typing: event.typing });
+    }
+  }
+
+  /** consumeApplication cases 5, 33: dropped silently unless sharing is on (the text is never logged). */
+  private async consumeClipboard(parts: Uint8Array[], gen: number): Promise<void> {
+    if (!this.canUseSessionTools()) return;
+    if (!this.clipboardAllowed) {
+      if (!this.clipboardDropLogged) {
+        this.clipboardDropLogged = true;
+        this.status('clipboard bị bỏ (đang tắt)');
+      }
+      return;
+    }
+    const text = await decodeClipboardMessage(parts, () => this.loadClipboardZstd());
+    // Sharing may have been switched off, or the session ended, while zstd loaded.
+    if (text === null || !this.live(gen) || !this.clipboardAllowed || !this.canUseSessionTools()) return;
+    this.on({ type: 'clipboard', text });
+  }
+
+  private loadClipboardZstd(): Promise<ClipboardZstd> {
+    if (this.clipboardZstd === null) {
+      const p = (this.deps.makeClipboardZstd ?? makeClipboardZstd)();
+      this.clipboardZstd = p;
+      p.catch((e: unknown) => {
+        if (this.state !== 'closed' && !this.clipboardZstdErrorLogged) {
+          this.clipboardZstdErrorLogged = true;
+          this.status(`Không tải được zstd cho clipboard: ${describe(e)}`);
+        }
+      });
+    }
+    return this.clipboardZstd;
+  }
+
+  /** consumeApplication cases 42, 43 (active only; malformed audio dropped). */
+  private consumeAudio(parts: Uint8Array[], gen: number): void {
+    if (this.state !== 'active') return;
+    const message = decodeAudio(parts);
+    if (message === null) return;
+    if (message.type === 'silence') {
+      if (this.audioEnabled) this.on({ type: 'audio', pcm: new Int16Array(message.bytes >> 1) });
+      return;
+    }
+    this.audio ??= new SessionAudioDecoder(
+      this.deps.makeG722Decoder ?? (() => G722Decoder.create()),
+      (pcm) => {
+        if (this.live(gen) && this.state === 'active' && this.audioEnabled) this.on({ type: 'audio', pcm });
+      },
+      (kind, e) => {
+        if (this.live(gen)) this.status(kind === 'load' ? `Không tải được bộ giải mã âm thanh: ${describe(e)}` : `Lỗi giải mã âm thanh: ${describe(e)}`);
+      },
+    );
+    this.audio.push(message.data);
   }
 
   /** consumeApplication case 1. */
@@ -963,6 +1141,10 @@ export class RelaySession {
     this.peer = null;
     this.renderer?.dispose();
     this.renderer = null;
+    this.audio?.dispose();
+    this.audio = null;
+    this.clipboardAllowed = false;
+    this.audioEnabled = false;
     this.password = '';
     this.connectionHash = '';
     this.options = null;
@@ -975,6 +1157,7 @@ export class RelaySession {
     this.probeSentAt = null;
     command?.channel.close();
     peer?.channel.close();
+    this.syncTools();
     this.on({ type: 'closed', reason });
   }
 }
