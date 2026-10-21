@@ -25,7 +25,7 @@ import {
 import { connectFormError, formatStats, loadToken, mountDiagnostics, readStorage, REASONS, saveToken } from '../spike/diagnostics';
 import { AUDIO_VOLUMES, AudioPlayer, AudioPlayerError, type AudioVolume } from './audio-player';
 import { openAnnotator, type AnnotatorHandle } from './annotate';
-import { canvasToPng, captureFileName, downloadBlob, snapshotCanvas } from './capture';
+import { captureFileName, downloadBlob, downloadUrl, pngDataUrl, snapshotCanvas } from './capture';
 import { createCaptureToast, type CaptureToast } from './capture-toast';
 import { createChatPanel } from './chat-panel';
 import { ClipboardSync } from './clipboard-sync';
@@ -560,12 +560,10 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
   function capture(kind: CaptureKind): void {
     if (!peer || !screenView.hasFrame || captureModal) return;
     if (kind === 'full') {
-      const name = captureFileName(machineName(), new Date(), 'png');
-      // toBlob copies the pixels now; the download starts from its callback, from this click.
-      canvasToPng(canvas).then(
-        (blob) => downloadBlob(blob, name),
-        () => captureToast.notice('Không tạo được ảnh PNG.'),
-      );
+      // Synchronous, inside the menu click: Safari only allows the download within the gesture.
+      const url = pngDataUrl(canvas);
+      if (url) downloadUrl(url, captureFileName(machineName(), new Date(), 'png'));
+      else captureToast.notice('Không tạo được ảnh PNG.');
       focusUnlessTouch();
       return;
     }
@@ -574,7 +572,7 @@ export function mountViewer(app: HTMLElement, deps: ViewerDeps): ViewerHandle {
     captureModal = openAnnotator({
       image: snapshotCanvas(canvas),
       selectRegion: kind === 'region',
-      save: (blob) => downloadBlob(blob, captureFileName(name, new Date(), 'png')),
+      save: (url) => downloadUrl(url, captureFileName(name, new Date(), 'png')),
       closed: () => {
         captureModal = null;
         refreshControl();

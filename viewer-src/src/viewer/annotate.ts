@@ -4,7 +4,7 @@
 // draws the marks translated by its origin, at source resolution. Pointer events with
 // touch-action none, so it works with a finger on a phone. The model is DOM-free.
 import {
-  canvasToPng,
+  pngDataUrl,
   exportBounds,
   isExportableRegion,
   MAX_MARKS,
@@ -168,8 +168,8 @@ export interface AnnotatorOptions {
   image: HTMLCanvasElement;
   /** "Chụp một vùng…": start on the region tool with nothing selected. */
   selectRegion: boolean;
-  /** The PNG to save; the page starts the download. */
-  save(blob: Blob): void;
+  /** The PNG (data URL) to save; called synchronously inside the Lưu PNG click, the page starts the download. */
+  save(pngDataUrl: string): void;
   /** The modal closed (by Đóng, Esc, or `close()`). */
   closed(): void;
   /** The PNG could not be produced. */
@@ -228,7 +228,6 @@ export function openAnnotator(o: AnnotatorOptions): AnnotatorHandle {
   const sizeEl = q<HTMLSpanElement>('.cap-size');
   const errorEl = q<HTMLParagraphElement>('.cap-error');
   let open = true;
-  let saving = false;
 
   /** Preview pixels per source pixel. */
   const previewScale = (): number => (canvas.width > 0 && model.width > 0 ? canvas.width / model.width : 1);
@@ -261,7 +260,7 @@ export function openAnnotator(o: AnnotatorOptions): AnnotatorHandle {
     for (const b of inkButtons) b.setAttribute('aria-pressed', String(b.dataset.ink === model.ink));
     undo.disabled = model.marks.length === 0;
     const region = model.exportRegion();
-    save.disabled = region === null || saving;
+    save.disabled = region === null;
     sizeEl.textContent = region ? `${region.w} × ${region.h}` : HINT;
     render();
   }
@@ -338,27 +337,14 @@ export function openAnnotator(o: AnnotatorOptions): AnnotatorHandle {
   });
   q<HTMLButtonElement>('.cap-close').addEventListener('click', () => close());
 
-  // The download starts from the PNG callback of the click that asked for it.
+  // Everything up to o.save() is synchronous: the download starts inside this click (user gesture).
   save.addEventListener('click', () => {
     const out = renderExport(model, o.image);
-    if (!out || saving) return;
-    saving = true;
-    errorEl.hidden = true;
-    refresh();
-    canvasToPng(out).then(
-      (blob) => {
-        saving = false;
-        if (open) refresh();
-        o.save(blob);
-      },
-      () => {
-        saving = false;
-        if (!open) return;
-        errorEl.hidden = false;
-        refresh();
-        o.failed?.();
-      },
-    );
+    if (!out) return;
+    const url = pngDataUrl(out);
+    errorEl.hidden = url !== null;
+    if (url === null) return o.failed?.();
+    o.save(url);
   });
 
   const onKeyDown = (e: KeyboardEvent) => {
@@ -387,6 +373,18 @@ export function openAnnotator(o: AnnotatorOptions): AnnotatorHandle {
   root.addEventListener('keydown', onKeyDown);
   const onResize = () => fit();
   window.addEventListener('resize', onResize);
+  // Fullscreen shows only the fullscreen element's subtree: the modal lives inside it, and follows
+  // when fullscreen starts or ends while it is open.
+  const host = (): HTMLElement => (document.fullscreenElement as HTMLElement | null) ?? document.body;
+  const onFullscreenChange = () => {
+    const target = host();
+    if (root.parentElement === target) return;
+    const hadFocus = root.contains(document.activeElement);
+    target.append(root);
+    fit();
+    if (hadFocus || !root.contains(document.activeElement)) root.querySelector<HTMLButtonElement>('[data-tool]')?.focus();
+  };
+  document.addEventListener('fullscreenchange', onFullscreenChange);
   const resizeObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(() => fit()) : null;
   resizeObserver?.observe(stage);
 
@@ -394,12 +392,13 @@ export function openAnnotator(o: AnnotatorOptions): AnnotatorHandle {
     if (!open) return;
     open = false;
     window.removeEventListener('resize', onResize);
+    document.removeEventListener('fullscreenchange', onFullscreenChange);
     resizeObserver?.disconnect();
     root.remove();
     o.closed();
   }
 
-  document.body.append(root);
+  host().append(root);
   fit();
   refresh();
   (root.querySelector<HTMLButtonElement>(`[data-tool="${model.tool}"]`) ?? save).focus();

@@ -95,9 +95,7 @@ describe('screenshots, annotation and recording in the viewer page', () => {
         get: (t, p: string) => (p in t ? t[p] : (...args: unknown[]) => void (p === 'drawImage' && drawImageSources.push(args[0]))),
         set: (t, p: string, v) => ((t[p] = v), true),
       })) as never);
-    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(function (cb: BlobCallback, type?: string) {
-      cb(new Blob(['png-bytes'], { type }));
-    });
+    vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue('data:image/png;base64,AAAA');
     (URL as unknown as { createObjectURL: (b: Blob) => string }).createObjectURL = (b) => `blob:${b.type}`;
     (URL as unknown as { revokeObjectURL: (u: string) => void }).revokeObjectURL = () => {};
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
@@ -127,16 +125,15 @@ describe('screenshots, annotation and recording in the viewer page', () => {
     expect(menuItem('Quay màn hình').disabled).toBe(false);
   });
 
-  test('Lưu toàn màn hình downloads a PNG named <máy> yyyy-MM-dd HH.mm.ss.png from the current frame', async () => {
+  test('Lưu toàn màn hình downloads a PNG named <máy> yyyy-MM-dd HH.mm.ss.png, synchronously inside the click', () => {
     connect();
     frame();
     menuItem('Lưu toàn màn hình (PNG)').click();
-    await vi.waitFor(() => expect(downloads).toHaveLength(1));
-    expect(downloads[0]).toEqual({ name: 'Máy-kế-toán 2026-10-21 09.05.07.png', type: 'blob:image/png' });
+    expect(downloads).toEqual([{ name: 'Máy-kế-toán 2026-10-21 09.05.07.png', type: 'data:image/png;base64,AAAA' }]);
     expect(document.querySelector('.cap-modal')).toBeNull();
   });
 
-  test('Chụp và chú thích opens the modal on a snapshot, not the live canvas; Lưu PNG downloads; Đóng closes', async () => {
+  test('Chụp và chú thích opens the modal on a snapshot, not the live canvas; Lưu PNG downloads; Đóng closes', () => {
     connect();
     frame();
     menuItem('Chụp và chú thích…').click();
@@ -149,10 +146,20 @@ describe('screenshots, annotation and recording in the viewer page', () => {
     expect(preview.length).toBeGreaterThan(0);
     expect(preview.every((s) => s instanceof HTMLCanvasElement && s !== canvas)).toBe(true);
     modal!.querySelector<HTMLButtonElement>('.cap-save')!.click();
-    await vi.waitFor(() => expect(downloads).toHaveLength(1));
-    expect(downloads[0]!.name).toBe('Máy-kế-toán 2026-10-21 09.05.07.png');
+    expect(downloads).toEqual([{ name: 'Máy-kế-toán 2026-10-21 09.05.07.png', type: 'data:image/png;base64,AAAA' }]);
     modal!.querySelector<HTMLButtonElement>('.cap-close')!.click();
     expect(document.querySelector('.cap-modal')).toBeNull();
+  });
+
+  test('with the stage fullscreen the annotator opens inside it, so it is visible', () => {
+    connect();
+    frame();
+    const stage = $<HTMLElement>('#stage');
+    Object.defineProperty(document, 'fullscreenElement', { configurable: true, get: () => stage });
+    menuItem('Chụp và chú thích…').click();
+    expect(document.querySelector('.cap-modal')!.parentElement).toBe(stage);
+    document.querySelector<HTMLButtonElement>('.cap-close')!.click();
+    delete (document as unknown as Record<string, unknown>).fullscreenElement;
   });
 
   test('Chụp một vùng opens on the region tool with nothing selected', () => {

@@ -185,7 +185,7 @@ describe('renderExport / paintMarks', () => {
 
 describe('openAnnotator modal', () => {
   let calls: Call[];
-  let saved: Blob[];
+  let saved: string[];
   let closed: number;
   let handle: AnnotatorHandle;
   const $ = <T extends HTMLElement>(sel: string) => document.body.querySelector<T>(sel)!;
@@ -211,9 +211,7 @@ describe('openAnnotator modal', () => {
     closed = 0;
     document.body.innerHTML = '';
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation((() => fakeContext(calls)) as never);
-    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(function (cb: BlobCallback) {
-      cb(new Blob(['png'], { type: 'image/png' }));
-    });
+    vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue('data:image/png;base64,AAAA');
   });
   afterEach(() => {
     handle?.close();
@@ -245,7 +243,7 @@ describe('openAnnotator modal', () => {
     expect($<HTMLButtonElement>('.cap-save').disabled).toBe(true);
   });
 
-  test('draws with the pen in the chosen colour, Hoàn tác undoes, Lưu PNG saves the cropped, annotated PNG', async () => {
+  test('draws with the pen in the chosen colour, Hoàn tác undoes, Lưu PNG saves the cropped, annotated PNG', () => {
     setup(false);
     $<HTMLButtonElement>('[data-ink="blue"]').click();
     pointer('pointerdown', 20, 30);
@@ -262,8 +260,8 @@ describe('openAnnotator modal', () => {
     pointer('pointerup', 60, 50);
     calls.length = 0;
     $<HTMLButtonElement>('.cap-save').click();
-    await vi.waitFor(() => expect(saved).toHaveLength(1));
-    expect(saved[0]!.type).toBe('image/png');
+    // Synchronous: the download must start inside the click.
+    expect(saved).toEqual(['data:image/png;base64,AAAA']);
     expect(calls.find((c) => c.op === 'strokeRect')!.args).toEqual([20, 20, 80, 40]);
     expect(calls.find((c) => c.op === 'strokeRect')!.style).toBe(INK_COLORS.yellow);
   });
@@ -276,15 +274,34 @@ describe('openAnnotator modal', () => {
     expect($('.cap-size').textContent).toBe('200 × 100');
   });
 
-  test('a PNG encoding failure is shown and nothing is saved', async () => {
+  test('a PNG encoding failure is shown and nothing is saved', () => {
     setup(false);
-    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(function (cb: BlobCallback) {
-      cb(null);
-    });
+    vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue('data:,');
     $<HTMLButtonElement>('.cap-save').click();
-    await vi.waitFor(() => expect($<HTMLElement>('.cap-error').hidden).toBe(false));
+    expect($<HTMLElement>('.cap-error').hidden).toBe(false);
     expect(saved).toHaveLength(0);
     expect($<HTMLButtonElement>('.cap-save').disabled).toBe(false);
+  });
+
+  test('opens inside the fullscreen element and follows fullscreen changes while open', () => {
+    const stage = document.createElement('div');
+    document.body.append(stage);
+    const fullscreen = (el: Element | null) => {
+      Object.defineProperty(document, 'fullscreenElement', { configurable: true, get: () => el });
+      document.dispatchEvent(new Event('fullscreenchange'));
+    };
+    fullscreen(stage);
+    setup(false);
+    expect($('.cap-modal').parentElement).toBe(stage);
+    fullscreen(null);
+    expect($('.cap-modal').parentElement).toBe(document.body);
+    fullscreen(stage);
+    expect($('.cap-modal').parentElement).toBe(stage);
+    handle.close();
+    expect(document.querySelector('.cap-modal')).toBeNull();
+    fullscreen(null); // no listener left behind: nothing re-appears
+    expect(document.querySelector('.cap-modal')).toBeNull();
+    delete (document as unknown as Record<string, unknown>).fullscreenElement;
   });
 
   test('Đóng and Esc close the modal once', () => {

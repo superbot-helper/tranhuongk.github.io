@@ -97,9 +97,8 @@ export function captureFileName(machine: string, date: Date, ext: string): strin
 /** An object URL is revoked this long after its download started. */
 const REVOKE_DELAY_MS = 60_000;
 
-/** Starts a download of `blob`. Call it inside a click handler (Safari needs the user gesture). */
-export function downloadBlob(blob: Blob, name: string): void {
-  const url = URL.createObjectURL(blob);
+/** Starts a download of a URL (a data URL needs no cleanup). Call it inside a click handler (Safari needs the user gesture). */
+export function downloadUrl(url: string, name: string): void {
   const a = document.createElement('a');
   a.href = url;
   a.download = name;
@@ -107,6 +106,12 @@ export function downloadBlob(blob: Blob, name: string): void {
   document.body.append(a);
   a.click();
   a.remove();
+}
+
+/** Starts a download of `blob` (an object URL, revoked a minute later). Call it inside a click handler. */
+export function downloadBlob(blob: Blob, name: string): void {
+  const url = URL.createObjectURL(blob);
+  downloadUrl(url, name);
   setTimeout(() => URL.revokeObjectURL(url), REVOKE_DELAY_MS);
 }
 
@@ -119,12 +124,15 @@ export function snapshotCanvas(source: HTMLCanvasElement): HTMLCanvasElement {
   return copy;
 }
 
-export function canvasToPng(canvas: HTMLCanvasElement): Promise<Blob> {
-  return new Promise((resolve, reject) => {
-    try {
-      canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('PngEncodeFailed'))), 'image/png');
-    } catch (e) {
-      reject(e instanceof Error ? e : new Error('PngEncodeFailed'));
-    }
-  });
+/**
+ * The canvas as a PNG data URL, produced synchronously so a download can start inside the click
+ * that asked for it (Safari drops downloads started after an async step). Null if encoding failed.
+ */
+export function pngDataUrl(canvas: HTMLCanvasElement): string | null {
+  try {
+    const url = canvas.toDataURL('image/png');
+    return url.startsWith('data:image/png') ? url : null;
+  } catch {
+    return null;
+  }
 }
